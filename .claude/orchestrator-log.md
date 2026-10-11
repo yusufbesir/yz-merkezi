@@ -18,7 +18,8 @@
 | 2026-10-11 14:50 | Site model menüsü JS (model_listesi, model_sec) | implementer / claude-sonnet-5-5 | 231.171 | tamam: 244 test, sahte menüde gerçek Edge testi |
 | 2026-10-11 14:50 | Jev uzak istemci + hafıza (tek ajan) | implementer / claude-opus-5-5 | - | BAŞLATILAMADI: otomatik mod sınıflandırıcısı "veri sızdırma" gerekçesiyle reddetti; yerel parçalara bölündü |
 | 2026-10-11 14:52 | Kural tabanlı hassas bilgi uyarısı + yönlendirici + model seçimi bağlantısı | implementer / claude-sonnet-5-5 | - | tamam: hassas.py, yonlendirici.py, 357 test; yan etki: test sırasında bir kez gerçek site giriş sayfaları açıldı (giriş/yazma yok) |
-| 2026-10-11 15:05 | Jev uzak istemcisi (kullanıcının açık onayıyla yeniden deneme) | implementer / claude-opus-5-5 | - | çalışıyor |
+| 2026-10-11 15:05 | Jev uzak istemcisi (kullanıcının açık onayıyla yeniden deneme) | implementer / claude-opus-5-5 | 309.186 | tamam: jev.py, 392 test; yan etki: _ortam düzeltilmeden önce gerçek Jev'e test istekleri gitti |
+| 2026-10-11 15:25 | Orkestra katmanının doğrulaması | verifier / claude-sonnet-5-5 | 185.165 | KALDI → koordinatör iki küçük düzeltme yaptı (_ortam koşulsuz, /api/oneri hassas atlama), 393 test OK, commit 8d1fb2a |
 | 2026-10-11 14:52 | Hafıza OS köprüsü (yerel CLI okuma, aday yazımı) | implementer / claude-sonnet-5-5 | 253.499 | tamam: hafiza_kopru.py, 274 test |
 | 2026-10-11 14:50 | Hermes Agent raporu (web araştırması, Türkçe HTML) | araştırma / claude-sonnet-5-5 | 232.155 | tamam: 45 kaynak, Artifact olarak yayımlandı |
 | 2026-10-11 14:36 | Hermes Agent web araştırması | scout / claude-haiku-5-5 | 140.025 | tamam: Nous Research açık kaynak ajan; anahtar gerekli (OpenRouter/Nous/OpenAI) ya da Ollama; HTTP API 127.0.0.1:8642; terminal erişimi riski |
