@@ -1,286 +1,39 @@
-"""Chrome DevTools Protocol (CDP) için minimal istemci: Edge'i WebSocket üzerinden denetler.
+"""Chrome DevTools Protocol (CDP) için küçük istemci: Edge'i ağ portu açmadan, anonim BORULAR üzerinden denetler.
 
-Yalnızca Python standart kütüphanesi kullanır (socket, json, base64, struct, urllib).
-WebSocket çerçeve kodlama/çözme saf fonksiyonlardır (cerceve_olustur, cerceve_coz); bağlantı sınıfı
-(Baglanti) bunların üstüne el sıkışma, parçalı mesaj birleştirme, ping/pong ve komut-yanıt eşlemesi koyar.
+Edge `--remote-debugging-pipe --remote-debugging-io-pipes=<okuma>,<yazma>` ile başlatılır: tarayıcı, komutları
+kendisine verilen okuma borusundan alır, yanıt ve olayları yazma borusuna yazar. Mesajlar `\\0` ile ayrılmış
+JSON metinleridir. Hiçbir TCP portu dinlenmez; bu yüzden aynı bilgisayardaki başka bir süreç (ya da web sayfası)
+tarayıcıya bağlanıp çerezleri okuyamaz. Borunun ucu yalnızca uygulamayı başlatan süreçtedir.
+
+- `BoruBaglantisi`: tarayıcı düzeyindeki tek bağlantı. Tek okuyucu thread gelen mesajları toplar, komutlar
+  kimlik (id) ile eşlenir, sekme oturumlarına giden komutlar `sessionId` taşır (Target.attachToTarget, flatten).
+- `Oturum`: tek bir sekmeye bağlı oturum; degerlendir/git/yazi_ekle/tus/one_getir/kapat sunar.
+- `boruyla_baslat`: Edge'i borularla başlatır (yalnızca Windows).
+
+Yalnızca Python standart kütüphanesi kullanılır.
 """
-import base64
 import collections
-import hashlib
 import json
 import os
-import socket
-import struct
+import subprocess
+import threading
 import time
-import urllib.error
-import urllib.parse
-import urllib.request
 
 import siteler
 
-WS_ANAHTAR_EKI = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"  # RFC 6455 sabiti
-OP_DEVAM, OP_METIN, OP_IKILI, OP_KAPAT, OP_PING, OP_PONG = 0x0, 0x1, 0x2, 0x8, 0x9, 0xA
-EN_BUYUK_YUK = 256 * 1024 * 1024  # bozuk bir uzunluk bilgisi belleği doldurmasın
-HTTP_ZAMANI = 5
-
-# Sistem vekil (proxy) ayarı yerel adrese gitmeyi bozmasın.
-_acici = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+EN_BUYUK_YUK = 256 * 1024 * 1024  # bozuk/sonsuz bir mesaj belleği doldurmasın
+OLAY_SINIRI = 200                 # saklanan en son olay sayısı
+OKUMA_PARCASI = 65536
 
 
 class CdpHatasi(Exception):
     """Kullanıcıya Türkçe gösterilecek tarayıcı denetimi hatası."""
 
 
-# ---------------------------------------------------------------- WebSocket çerçeveleri
+# ---------------------------------------------------------------- sayfa komutları (ortak)
 
-Cerceve = collections.namedtuple("Cerceve", "son opkod yuk maskeli uzunluk")
-
-
-def _maskele(yuk, maske):
-    """Yükü 4 baytlık maskeyle XOR'lar (aynı işlem hem maskeler hem açar)."""
-    if not yuk:
-        return b""
-    tekrar = (maske * (len(yuk) // 4 + 1))[:len(yuk)]
-    return (int.from_bytes(yuk, "big") ^ int.from_bytes(tekrar, "big")).to_bytes(len(yuk), "big")
-
-
-def cerceve_olustur(yuk, opkod=OP_METIN, maskeli=True, son=True, maske=None):
-    """Tek bir WebSocket çerçevesi üretir. İstemci→sunucu yönü maskeli, sunucu→istemci maskesizdir."""
-    if isinstance(yuk, str):
-        yuk = yuk.encode("utf-8")
-    ilk = (0x80 if son else 0) | opkod
-    n = len(yuk)
-    maske_biti = 0x80 if maskeli else 0
-    if n < 126:
-        baslik = struct.pack(">BB", ilk, maske_biti | n)
-    elif n < 65536:
-        baslik = struct.pack(">BBH", ilk, maske_biti | 126, n)
-    else:
-        baslik = struct.pack(">BBQ", ilk, maske_biti | 127, n)
-    if not maskeli:
-        return baslik + yuk
-    maske = maske or os.urandom(4)
-    return baslik + maske + _maskele(yuk, maske)
-
-
-def cerceve_coz(veri):
-    """Tamponun başındaki çerçeveyi çözer; veri eksikse None döner. Çözülen bayt sayısı `uzunluk` alanındadır."""
-    if len(veri) < 2:
-        return None
-    son, opkod = bool(veri[0] & 0x80), veri[0] & 0x0F
-    maskeli, n, konum = bool(veri[1] & 0x80), veri[1] & 0x7F, 2
-    if n == 126:
-        if len(veri) < 4:
-            return None
-        n, konum = struct.unpack(">H", bytes(veri[2:4]))[0], 4
-    elif n == 127:
-        if len(veri) < 10:
-            return None
-        n, konum = struct.unpack(">Q", bytes(veri[2:10]))[0], 10
-    if n > EN_BUYUK_YUK:
-        raise CdpHatasi(f"Tarayıcıdan gelen veri çok büyük ({n} bayt), bağlantı kesildi.")
-    maske = b""
-    if maskeli:
-        if len(veri) < konum + 4:
-            return None
-        maske, konum = bytes(veri[konum:konum + 4]), konum + 4
-    if len(veri) < konum + n:
-        return None
-    yuk = bytes(veri[konum:konum + n])
-    if maskeli:
-        yuk = _maskele(yuk, maske)
-    return Cerceve(son, opkod, yuk, maskeli, konum + n)
-
-
-# ---------------------------------------------------------------- HTTP uçları
-
-def _http_json(port, yol):
-    """127.0.0.1:port üzerindeki DevTools HTTP ucundan JSON okur."""
-    adres = f"http://127.0.0.1:{port}{yol}"
-    try:
-        with _acici.open(adres, timeout=HTTP_ZAMANI) as yanit:
-            return json.loads(yanit.read().decode("utf-8"))
-    except (urllib.error.URLError, OSError, ValueError) as h:
-        raise CdpHatasi(f"Tarayıcıya bağlanılamadı ({adres}): {h}") from h
-
-
-def hedefler(port):
-    """Açık sekme/hedeflerin listesi (id, type, url, title, webSocketDebuggerUrl)."""
-    return _http_json(port, "/json/list")
-
-
-def tarayici_ws(port):
-    """Tarayıcı düzeyindeki WebSocket adresi (sekme değil, tüm tarayıcıyı denetler)."""
-    adres = _http_json(port, "/json/version").get("webSocketDebuggerUrl")
-    if not adres:
-        raise CdpHatasi("Tarayıcı denetim adresi vermedi (/json/version).")
-    return adres
-
-
-def pencere_bul(port, parca):
-    """Adresi parçayla eşleşen ilk "page" hedefi; yoksa None.
-
-    parca: "alanadi[:port][/yol-oneki]" (ör. "chatgpt.com", "127.0.0.1:8799/test"). Eşleşme alt dize
-    değil, alan adı sınırında yapılır (bkz. siteler.adres_eslesir_mi): "chatgpt.com.kotu.net" eşleşmez.
-    """
-    return next((h for h in hedefler(port)
-                 if h.get("type") == "page" and siteler.adres_eslesir_mi(h.get("url", ""), parca)), None)
-
-
-def yeni_pencere(port, url):
-    """Yeni bir ÜST DÜZEY pencere açar ve hedef kimliğini (targetId) döndürür."""
-    with Baglanti(tarayici_ws(port)) as b:
-        return b.komut("Target.createTarget", url=url, newWindow=True)["targetId"]
-
-
-def pencere_sinirlari(port, hedef_id, sol, ust, genislik, yukseklik):
-    """Hedefin (sekmenin) bulunduğu tarayıcı penceresini verilen konuma/boyuta getirir.
-
-    Tarayıcı düzeyi bağlantıyla Browser.getWindowForTarget → Browser.setWindowBounds çağrılır;
-    pencere simge/ekranı kaplama durumundaysa önce normale döndürülür. Değerler tarayıcının
-    kullandığı mantıksal (DIP) pikseldir. Yeni sınırlar sözlük olarak döner.
-    """
-    with Baglanti(tarayici_ws(port)) as b:
-        pencere = b.komut("Browser.getWindowForTarget", targetId=hedef_id)
-        if pencere.get("bounds", {}).get("windowState", "normal") != "normal":
-            b.komut("Browser.setWindowBounds", windowId=pencere["windowId"], bounds={"windowState": "normal"})
-        b.komut("Browser.setWindowBounds", windowId=pencere["windowId"],
-                bounds={"left": int(sol), "top": int(ust), "width": int(genislik), "height": int(yukseklik),
-                        "windowState": "normal"})
-        return b.komut("Browser.getWindowForTarget", targetId=hedef_id).get("bounds", {})
-
-
-# ---------------------------------------------------------------- bağlantı
-
-class Baglanti:
-    """Tek bir CDP WebSocket bağlantısı (sekme ya da tarayıcı düzeyi)."""
-
-    def __init__(self, ws_url, zaman=10):
-        self._sonraki_id = 0
-        self._tampon = bytearray()
-        self._kapali = False
-        self.son_olaylar = collections.deque(maxlen=200)
-        parca = urllib.parse.urlparse(ws_url)
-        if parca.scheme != "ws" or not parca.hostname:
-            raise CdpHatasi(f"Geçersiz WebSocket adresi: {ws_url}")
-        try:
-            self._soket = socket.create_connection((parca.hostname, parca.port or 80), timeout=zaman)
-        except OSError as h:
-            raise CdpHatasi(f"Tarayıcıya bağlanılamadı ({ws_url}): {h}") from h
-        try:
-            self._el_sikis(parca, zaman)
-        except BaseException:
-            self._soket.close()
-            raise
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        self.kapat()
-
-    def _el_sikis(self, parca, zaman):
-        """HTTP Upgrade isteğini gönderir, 101 yanıtını ve Sec-WebSocket-Accept değerini doğrular."""
-        anahtar = base64.b64encode(os.urandom(16)).decode("ascii")
-        yol = (parca.path or "/") + (f"?{parca.query}" if parca.query else "")
-        istek = (f"GET {yol} HTTP/1.1\r\nHost: {parca.hostname}:{parca.port or 80}\r\n"
-                 f"Upgrade: websocket\r\nConnection: Upgrade\r\n"
-                 f"Sec-WebSocket-Key: {anahtar}\r\nSec-WebSocket-Version: 13\r\n\r\n")
-        bitis = time.monotonic() + zaman
-        try:
-            self._soket.sendall(istek.encode("ascii"))
-            yanit = bytearray()
-            while b"\r\n\r\n" not in yanit:
-                yanit += self._al(bitis)
-        except OSError as h:
-            raise CdpHatasi(f"WebSocket el sıkışması başarısız: {h}") from h
-        baslik, _, kalan = bytes(yanit).partition(b"\r\n\r\n")
-        satirlar = baslik.decode("latin-1").split("\r\n")
-        if len(satirlar[0].split()) < 2 or satirlar[0].split()[1] != "101":
-            raise CdpHatasi(f"WebSocket bağlantısı reddedildi: {satirlar[0]}")
-        basliklar = {s.split(":", 1)[0].strip().lower(): s.split(":", 1)[1].strip() for s in satirlar[1:] if ":" in s}
-        beklenen = base64.b64encode(hashlib.sha1((anahtar + WS_ANAHTAR_EKI).encode("ascii")).digest()).decode("ascii")
-        if basliklar.get("sec-websocket-accept") != beklenen:
-            raise CdpHatasi("WebSocket el sıkışması doğrulanamadı (Sec-WebSocket-Accept uyuşmuyor).")
-        self._tampon += kalan
-
-    def _al(self, bitis):
-        """Sokette en geç `bitis` anına kadar veri bekler ve okur."""
-        kalan = bitis - time.monotonic()
-        if kalan <= 0:
-            raise CdpHatasi("Tarayıcıdan yanıt gelmedi (zaman aşımı).")
-        self._soket.settimeout(kalan)
-        try:
-            parca = self._soket.recv(65536)
-        except socket.timeout as h:
-            raise CdpHatasi("Tarayıcıdan yanıt gelmedi (zaman aşımı).") from h
-        except OSError as h:
-            raise CdpHatasi(f"Tarayıcı bağlantısı koptu: {h}") from h
-        if not parca:
-            self._kapali = True
-            raise CdpHatasi("Tarayıcı bağlantıyı kapattı.")
-        return parca
-
-    def _gonder(self, yuk, opkod=OP_METIN):
-        """Maskeli çerçeve olarak gönderir."""
-        if self._kapali:
-            raise CdpHatasi("Bağlantı kapalı.")
-        try:
-            self._soket.settimeout(10)
-            self._soket.sendall(cerceve_olustur(yuk, opkod, maskeli=True))
-        except OSError as h:
-            raise CdpHatasi(f"Tarayıcıya veri gönderilemedi: {h}") from h
-
-    def _mesaj_oku(self, bitis):
-        """Bir mesajın tüm parçalarını birleştirir; araya giren ping'e pong döner, close'u işler."""
-        parcalar, basladi = [], False
-        while True:
-            while (c := cerceve_coz(self._tampon)) is None:
-                self._tampon += self._al(bitis)
-            del self._tampon[:c.uzunluk]
-            if c.opkod == OP_PING:
-                self._gonder(c.yuk, OP_PONG)
-            elif c.opkod == OP_PONG:
-                continue
-            elif c.opkod == OP_KAPAT:
-                self._kapali = True
-                try:
-                    self._soket.sendall(cerceve_olustur(c.yuk[:2], OP_KAPAT))
-                except OSError:
-                    pass
-                raise CdpHatasi("Tarayıcı bağlantıyı kapattı (close çerçevesi).")
-            elif c.opkod in (OP_METIN, OP_IKILI) and not basladi:
-                parcalar, basladi = [c.yuk], True
-                if c.son:
-                    return b"".join(parcalar)
-            elif c.opkod == OP_DEVAM and basladi:
-                parcalar.append(c.yuk)
-                if c.son:
-                    return b"".join(parcalar)
-            else:
-                raise CdpHatasi("Tarayıcıdan geçersiz WebSocket çerçevesi geldi.")
-
-    def komut(self, yontem, *, zaman=30, **params):
-        """CDP komutu gönderir, aynı kimlikli yanıtı bekler ve `result` değerini döndürür."""
-        self._sonraki_id += 1
-        kimlik = self._sonraki_id
-        self._gonder(json.dumps({"id": kimlik, "method": yontem, "params": params}))
-        bitis = time.monotonic() + zaman
-        while True:
-            try:
-                mesaj = json.loads(self._mesaj_oku(bitis).decode("utf-8"))
-            except ValueError as h:
-                raise CdpHatasi(f"Tarayıcıdan okunamayan yanıt geldi: {h}") from h
-            if mesaj.get("id") != kimlik:
-                if "method" in mesaj:  # olay (event)
-                    self.son_olaylar.append(mesaj)
-                continue
-            if "error" in mesaj:
-                e = mesaj["error"]
-                raise CdpHatasi(f"{yontem} komutu hata verdi: {e.get('message', e)} (kod {e.get('code', '?')})")
-            return mesaj.get("result", {})
-
-    # ------------------------------------------------------------ kolaylık fonksiyonları
+class _SayfaKomutlari:
+    """`komut(yontem, zaman=..., **params)` sağlayan sınıflara sekme düzeyi kolaylık fonksiyonları ekler."""
 
     def degerlendir(self, js, zaman=30):
         """Sayfada JavaScript çalıştırır (Promise beklenir) ve değeri döndürür."""
@@ -314,15 +67,302 @@ class Baglanti:
         """Sekmeyi/pencereyi öne getirir."""
         self.komut("Page.bringToFront")
 
-    def kapat(self):
-        """Bağlantıyı düzgünce kapatır (hata vermez)."""
-        if not self._kapali:
+
+# ---------------------------------------------------------------- boru bağlantısı
+
+class BoruBaglantisi:
+    """Tarayıcı düzeyinde CDP bağlantısı: iki anonim boru üzerinden `\\0` ile ayrılmış JSON mesajları.
+
+    okuma_fd: tarayıcının YAZDIĞI borunun bizdeki ucu; yazma_fd: tarayıcının OKUDUĞU borunun bizdeki ucu.
+    Birden fazla thread aynı anda komut gönderebilir; yanıtlar kimlik (id) ile eşlenir.
+    """
+
+    def __init__(self, okuma_fd, yazma_fd, surec=None):
+        self._okuma_fd, self._yazma_fd = okuma_fd, yazma_fd
+        self.surec = surec                     # bizim başlattığımız tarayıcı süreci (varsa)
+        self._yazma_kilidi = threading.Lock()
+        self._kosul = threading.Condition()
+        self._sonraki_id = 0
+        self._bekleyen = {}                    # id -> None (bekleniyor) | yanıt mesajı
+        self._kapali = False
+        self._yazma_kapali = False
+        self.kapanma_sebebi = ""
+        self.olaylar = collections.deque(maxlen=OLAY_SINIRI)
+        self.oturumlar = {}                    # sessionId -> targetId (Target.attachedToTarget/detachedFromTarget)
+        self._okuyucu = threading.Thread(target=self._oku, name="cdp-boru-okuyucu", daemon=True)
+        self._okuyucu.start()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        self.kapat()
+
+    # ------------------------------------------------------------ durum
+
+    @property
+    def kapali(self):
+        return self._kapali
+
+    def canli_mi(self):
+        """Boru açık ve (biliniyorsa) tarayıcı süreci çalışıyor mu?"""
+        if self._kapali:
+            return False
+        return self.surec is None or self.surec.poll() is None
+
+    # ------------------------------------------------------------ okuma
+
+    def _oku(self):
+        """Tek okuyucu: `\\0` ile ayrılmış mesajları ayırır; boru kapanınca bekleyen tüm komutları uyandırır."""
+        tampon = bytearray()
+        sebep = "Tarayıcı bağlantıyı kapattı."
+        try:
+            while True:
+                parca = os.read(self._okuma_fd, OKUMA_PARCASI)
+                if not parca:
+                    break
+                tampon += parca
+                while True:
+                    i = tampon.find(b"\0")
+                    if i < 0:
+                        break
+                    ham = bytes(tampon[:i])
+                    del tampon[:i + 1]
+                    self._isle(ham)
+                if len(tampon) > EN_BUYUK_YUK:
+                    sebep = f"Tarayıcıdan gelen veri çok büyük ({len(tampon)} bayt), bağlantı kesildi."
+                    break
+        except OSError as h:
+            sebep = f"Tarayıcı bağlantısı koptu: {h}"
+        finally:
+            self._kapandi(sebep)
             try:
-                self._soket.sendall(cerceve_olustur(b"\x03\xe8", OP_KAPAT))
+                os.close(self._okuma_fd)
             except OSError:
                 pass
-            self._kapali = True
+
+    def _isle(self, ham):
         try:
-            self._soket.close()
-        except OSError:
+            mesaj = json.loads(ham.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            return  # bozuk tek mesaj bağlantıyı düşürmesin
+        if not isinstance(mesaj, dict):
+            return
+        if "id" in mesaj:
+            with self._kosul:
+                if mesaj["id"] in self._bekleyen:  # zaman aşımına uğramış komutun geç yanıtı atılır
+                    self._bekleyen[mesaj["id"]] = mesaj
+                    self._kosul.notify_all()
+            return
+        yontem = mesaj.get("method")
+        if not isinstance(yontem, str):
+            return
+        params = mesaj.get("params") if isinstance(mesaj.get("params"), dict) else {}
+        with self._kosul:
+            if yontem == "Target.attachedToTarget" and params.get("sessionId"):
+                self.oturumlar[params["sessionId"]] = (params.get("targetInfo") or {}).get("targetId", "")
+            elif yontem == "Target.detachedFromTarget" and params.get("sessionId"):
+                self.oturumlar.pop(params["sessionId"], None)
+            self.olaylar.append(mesaj)
+
+    def _kapandi(self, sebep):
+        with self._kosul:
+            if not self._kapali:
+                self._kapali = True
+                self.kapanma_sebebi = sebep
+            self._kosul.notify_all()
+
+    # ------------------------------------------------------------ yazma
+
+    def _yaz(self, veri):
+        with self._yazma_kilidi:
+            if self._yazma_kapali:
+                raise CdpHatasi("Tarayıcı bağlantısı kapalı.")
+            try:
+                gorunum = memoryview(veri)
+                while gorunum:
+                    yazilan = os.write(self._yazma_fd, gorunum)
+                    gorunum = gorunum[yazilan:]
+            except OSError as h:
+                self._kapandi(f"Tarayıcıya veri gönderilemedi: {h}")
+                raise CdpHatasi(f"Tarayıcıya veri gönderilemedi: {h}") from h
+
+    def komut(self, yontem, sessionId=None, zaman=30, parametreler=None, **params):
+        """CDP komutu gönderir, aynı kimlikli yanıtı bekler ve `result` değerini döndürür.
+
+        sessionId verilirse komut o sekme oturumuna gider. Parametre adı "sessionId" olan komutlar
+        (ör. Target.detachFromTarget) parametreyi `parametreler={"sessionId": ...}` ile verir.
+        """
+        if parametreler:
+            params = dict(parametreler, **params)
+        with self._kosul:
+            if self._kapali:
+                raise CdpHatasi(self.kapanma_sebebi or "Tarayıcı bağlantısı kapalı.")
+            self._sonraki_id += 1
+            kimlik = self._sonraki_id
+            self._bekleyen[kimlik] = None
+        mesaj = {"id": kimlik, "method": yontem, "params": params}
+        if sessionId:
+            mesaj["sessionId"] = sessionId
+        try:
+            # json.dumps denetim karakterlerini (\u0000 dahil) kaçışlar: ayraç baytı mesajın içinde geçemez.
+            self._yaz(json.dumps(mesaj).encode("utf-8") + b"\0")
+            bitis = time.monotonic() + zaman
+            with self._kosul:
+                while self._bekleyen.get(kimlik) is None:
+                    if self._kapali:
+                        raise CdpHatasi(self.kapanma_sebebi or "Tarayıcı bağlantısı kapalı.")
+                    kalan = bitis - time.monotonic()
+                    if kalan <= 0:
+                        raise CdpHatasi(f"Tarayıcıdan yanıt gelmedi (zaman aşımı: {yontem}).")
+                    self._kosul.wait(kalan)
+                yanit = self._bekleyen[kimlik]
+        finally:
+            with self._kosul:
+                self._bekleyen.pop(kimlik, None)
+        if "error" in yanit:
+            e = yanit["error"] if isinstance(yanit["error"], dict) else {"message": str(yanit["error"])}
+            raise CdpHatasi(f"{yontem} komutu hata verdi: {e.get('message', e)} (kod {e.get('code', '?')})")
+        sonuc = yanit.get("result", {})
+        return sonuc if isinstance(sonuc, dict) else {}
+
+    # ------------------------------------------------------------ kapatma
+
+    def kapat(self, tarayiciyi_kapat=False, bekleme=5):
+        """Bağlantıyı kapatır (hata vermez). tarayiciyi_kapat=True ise önce Browser.close gönderilir.
+
+        Bizim yazma ucumuz kapanınca tarayıcı da kendiliğinden kapanır (boru bağlantısının doğası).
+        Okuma ucu, okuyucu thread sonu (EOF) görünce kendisi kapatılır.
+        """
+        if tarayiciyi_kapat and not self._kapali:
+            try:
+                self.komut("Browser.close", zaman=bekleme)
+            except CdpHatasi:
+                pass
+        with self._yazma_kilidi:
+            if not self._yazma_kapali:
+                self._yazma_kapali = True
+                try:
+                    os.close(self._yazma_fd)
+                except OSError:
+                    pass
+        self._kapandi("Tarayıcı bağlantısı kapatıldı.")
+        if self.surec is not None and bekleme:
+            try:
+                self.surec.wait(bekleme)
+            except subprocess.TimeoutExpired:
+                pass
+
+
+class Oturum(_SayfaKomutlari):
+    """Tek bir sekmeye (hedefe) bağlı CDP oturumu; komutlar ortak boru üzerinden `sessionId` ile gider."""
+
+    def __init__(self, boru, hedef_id, oturum_id):
+        self.boru, self.hedef_id, self.oturum_id = boru, hedef_id, oturum_id
+        self._kapali = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        self.kapat()
+
+    def komut(self, yontem, *, zaman=30, **params):
+        if self._kapali:
+            raise CdpHatasi("Sekme bağlantısı kapalı.")
+        return self.boru.komut(yontem, sessionId=self.oturum_id, zaman=zaman, parametreler=params)
+
+    def kapat(self):
+        """Oturumdan ayrılır (Target.detachFromTarget); sekme açık kalır. Hata vermez."""
+        if self._kapali:
+            return
+        self._kapali = True
+        try:
+            self.boru.komut("Target.detachFromTarget", zaman=5, parametreler={"sessionId": self.oturum_id})
+        except CdpHatasi:
             pass
+
+
+# ---------------------------------------------------------------- tarayıcı düzeyi yardımcılar
+
+def hedefler(boru):
+    """Açık hedeflerin listesi: [{"id", "type", "url", "title"}] (Target.getTargets)."""
+    liste = boru.komut("Target.getTargets").get("targetInfos", [])
+    return [{"id": h.get("targetId", ""), "type": h.get("type", ""), "url": h.get("url", ""),
+             "title": h.get("title", "")} for h in liste if isinstance(h, dict)]
+
+
+def pencere_bul(boru, parca):
+    """Adresi parçayla eşleşen ilk "page" hedefi; yoksa None.
+
+    parca: "alanadi[:port][/yol-oneki]" (ör. "chatgpt.com", "127.0.0.1:8799/test"). Eşleşme alt dize
+    değil, alan adı sınırında yapılır (bkz. siteler.adres_eslesir_mi): "chatgpt.com.kotu.net" eşleşmez.
+    """
+    return next((h for h in hedefler(boru)
+                 if h["type"] == "page" and siteler.adres_eslesir_mi(h["url"], parca)), None)
+
+
+def sekmeye_baglan(boru, hedef_id):
+    """Hedefe (sekmeye) düz (flatten) oturumla bağlanır; `Oturum` döndürür."""
+    oturum_id = boru.komut("Target.attachToTarget", targetId=hedef_id, flatten=True).get("sessionId")
+    if not oturum_id:
+        raise CdpHatasi("Sekmeye bağlanılamadı (oturum kimliği gelmedi).")
+    return Oturum(boru, hedef_id, oturum_id)
+
+
+def yeni_pencere(boru, url):
+    """Yeni bir ÜST DÜZEY pencere açar ve hedef kimliğini (targetId) döndürür."""
+    return boru.komut("Target.createTarget", url=url, newWindow=True)["targetId"]
+
+
+def pencere_sinirlari(boru, hedef_id, sol, ust, genislik, yukseklik):
+    """Hedefin (sekmenin) bulunduğu tarayıcı penceresini verilen konuma/boyuta getirir.
+
+    Browser.getWindowForTarget → Browser.setWindowBounds çağrılır; pencere simge/ekranı kaplama
+    durumundaysa önce normale döndürülür. Değerler tarayıcının kullandığı mantıksal (DIP) pikseldir.
+    Yeni sınırlar sözlük olarak döner.
+    """
+    pencere = boru.komut("Browser.getWindowForTarget", targetId=hedef_id)
+    if pencere.get("bounds", {}).get("windowState", "normal") != "normal":
+        boru.komut("Browser.setWindowBounds", windowId=pencere["windowId"], bounds={"windowState": "normal"})
+    boru.komut("Browser.setWindowBounds", windowId=pencere["windowId"],
+               bounds={"left": int(sol), "top": int(ust), "width": int(genislik), "height": int(yukseklik),
+                       "windowState": "normal"})
+    return boru.komut("Browser.getWindowForTarget", targetId=hedef_id).get("bounds", {})
+
+
+# ---------------------------------------------------------------- başlatma
+
+def boruyla_baslat(komut):
+    """Tarayıcıyı CDP borularıyla başlatır ve `BoruBaglantisi` döndürür (yalnızca Windows).
+
+    komut: [exe, argümanlar...]; boru bayrakları exe'den hemen sonra eklenir. Tarayıcıya YALNIZCA iki boru
+    ucu kalıtılır (STARTUPINFO handle_list); bizdeki karşı uçlar süreç başlar başlamaz kapatılır, böylece
+    tarayıcı kapanınca okuyucu EOF görür. `--remote-debugging-io-pipes` sırası tarayıcının bakış açısındandır:
+    önce tarayıcının OKUDUĞU, sonra YAZDIĞI uç.
+    """
+    import msvcrt  # yalnızca Windows
+
+    tarayici_okur, biz_yazariz = os.pipe()
+    biz_okuruz, tarayici_yazar = os.pipe()
+    surec = None
+    try:
+        h_okur = msvcrt.get_osfhandle(tarayici_okur)
+        h_yazar = msvcrt.get_osfhandle(tarayici_yazar)
+        os.set_handle_inheritable(h_okur, True)
+        os.set_handle_inheritable(h_yazar, True)
+        bilgi = subprocess.STARTUPINFO()
+        bilgi.lpAttributeList = {"handle_list": [h_okur, h_yazar]}
+        tam = [komut[0], "--remote-debugging-pipe", f"--remote-debugging-io-pipes={h_okur},{h_yazar}", *komut[1:]]
+        surec = subprocess.Popen(tam, startupinfo=bilgi, close_fds=True)
+    except OSError as h:
+        for fd in (biz_yazariz, biz_okuruz):
+            os.close(fd)
+        raise CdpHatasi(f"Tarayıcı başlatılamadı: {h}") from h
+    finally:
+        for fd in (tarayici_okur, tarayici_yazar):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+    return BoruBaglantisi(biz_okuruz, biz_yazariz, surec)

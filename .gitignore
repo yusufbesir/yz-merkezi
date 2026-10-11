@@ -1,7 +1,13 @@
-# API anahtarları burada durur, asla depoya girmez
+# API anahtarları, ayarlar, oturum çerezleri ve günlükler burada durur, asla depoya girmez
 ayarlar.json
 ayarlar.tmp
-__pycache__/
+ayarlar*.json
 masaustu-ayarlar.json
 masaustu-ayarlar.tmp
+masaustu-ayarlar*.json
+*.bozuk-*.json
+*.tmp
+*.log
 .tarayici-profili/
+.tarayici-profili*/
+__pycache__/

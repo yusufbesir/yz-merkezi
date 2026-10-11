@@ -3,6 +3,7 @@
     "id": "chatgpt",
     "ad": "ChatGPT",
     "exe": "ChatGPT.exe",
+    "yol_icerir": "WindowsApps\\OpenAI.",
     "appid": "OpenAI.Codex_2p2nqsd0c76g0!App",
     "renk": "#10a37f"
   },
@@ -11,6 +12,7 @@
     "ad": "Gemini",
     "exe": "Gemini.exe",
     "yol": "%LOCALAPPDATA%\\Google\\Gemini\\Gemini.exe",
+    "yol_icerir": "\\Google\\Gemini\\",
     "renk": "#4285f4"
   },
   {

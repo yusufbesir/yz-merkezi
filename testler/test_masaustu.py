@@ -5,7 +5,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import _ortam  # noqa: E402,F401  (gerçek ayar dosyalarını korur; sunucu modülünden önce)
 import cdp  # noqa: E402
 import masaustu_sunucu as ms  # noqa: E402
 import siteler  # noqa: E402
@@ -238,16 +240,57 @@ class YerelGecmisTesti(unittest.TestCase):
 class GonderimTesti(unittest.TestCase):
     """siteye_gonder akışı: sahte bağlantıyla sıra ve girişler denetlenir."""
 
-    def kur(self, gonder_yaniti):
+    def kur(self, gonder_yaniti, kutu_hazir=True, kutu_metni=None, site="chatgpt", href=None, gezince=None):
+        """Sahte site sekmesi.
+
+        kutu_metni None ise kutu, yazi_ekle ile eklenenleri aynen gösterir (sorunsuz site).
+        href: sekmenin başlangıç adresi (varsayılan: sitenin yeni sohbet sayfası); git() çağrılınca adres
+        `gezince` olur (None ise gidilen adresin kendisi: yönlendirmesiz başarılı gezinme).
+        """
         b = mock.MagicMock()
-        b.degerlendir.side_effect = lambda js, zaman=30: {
-            js_("giris_var_mi"): {"giris": True, "sebep": "x"},
-            js_("yazi_kutusunu_bul"): {"tamam": True, "tur": "contenteditable", "sebep": ""},
-            js_("mesajlar"): {"baslik": "", "mesajlar": [{"rol": "asistan", "metin": "a"}]},
-            js_("gonder"): gonder_yaniti,
-            "location.href": "https://chatgpt.com/",
-        }[js]
+        konum = {"href": href or siteler.SITELER[site]["yeni_sohbet_adresi"]}
+        b.git.side_effect = lambda url: konum.update(href=gezince or url)
+        sjs = siteler.SITELER[site]["js"]
+
+        def degerlendir(js, zaman=30):
+            if js == sjs["kutu_metni"]:
+                return "".join(c.args[0] for c in b.yazi_ekle.call_args_list) if kutu_metni is None else kutu_metni
+            if js == "location.href":
+                return konum["href"]
+            return {
+                sjs["giris_var_mi"]: {"giris": True, "sebep": "x"},
+                sjs["yazi_kutusunu_bul"]: {"tamam": True, "tur": "contenteditable", "sebep": ""},
+                sjs["kutu_hazir_mi"]: {"hazir": kutu_hazir},
+                sjs["mesajlar"]: {"baslik": "", "mesajlar": [{"rol": "asistan", "metin": "a"}]},
+                sjs["gonder"]: gonder_yaniti,
+            }[js]
+        b.degerlendir.side_effect = degerlendir
         return b
+
+    def test_kutu_odakta_degilse_yazilmaz(self):
+        b = self.kur({"tamam": True, "yontem": "dugme", "sebep": ""}, kutu_hazir=False)
+        with mock.patch.object(ms, "site_sayfasi", return_value=b), mock.patch.object(ms.time, "sleep"):
+            with self.assertRaises(ms.SiteHatasi) as h:
+                ms.siteye_gonder("chatgpt", "x", True)
+        self.assertIn("odaklanamadı", str(h.exception))
+        b.yazi_ekle.assert_not_called()
+        self.assertNotIn(js("gonder"), [c.args[0] for c in b.degerlendir.call_args_list])
+
+    def test_yazilan_metin_uyusmuyorsa_gonderilmez(self):
+        b = self.kur({"tamam": True, "yontem": "dugme", "sebep": ""}, kutu_metni="baska bir sey")
+        with mock.patch.object(ms, "site_sayfasi", return_value=b), mock.patch.object(ms.time, "sleep"):
+            with self.assertRaises(ms.SiteHatasi) as h:
+                ms.siteye_gonder("chatgpt", "bir\niki", True)
+        self.assertIn("uyuşmuyor", str(h.exception))
+        self.assertNotIn(js("gonder"), [c.args[0] for c in b.degerlendir.call_args_list])
+        b.tus.assert_not_called()
+        b.kapat.assert_called_once()
+
+    def test_bosluk_farki_uyusmazlik_sayilmaz(self):
+        b = self.kur({"tamam": True, "yontem": "dugme", "sebep": ""}, kutu_metni="bir\n\niki\u00a0")
+        with mock.patch.object(ms, "site_sayfasi", return_value=b), mock.patch.object(ms.time, "sleep"):
+            ms.siteye_gonder("chatgpt", "bir\niki", True)
+        self.assertIn(js("gonder"), [c.args[0] for c in b.degerlendir.call_args_list])
 
     def test_satirlar_ayri_insert_text_ve_dugme(self):
         b = self.kur({"tamam": True, "yontem": "dugme", "sebep": ""})
@@ -290,11 +333,134 @@ class GonderimTesti(unittest.TestCase):
         ac.assert_called_once_with(siteler.SITELER["chatgpt"]["yeni_sohbet_adresi"])
         self.assertTrue(s["yeni_pencere"])
 
-    def test_baska_sitenin_adresine_gidilmez(self):
+    def test_taninmayan_sohbet_adresi_sorun_ve_yazilmaz(self):
+        # Y2a: sohbet adresi hiçbir siteye ait değilse hiçbir şey yazılmaz, sayfaya gidilmez.
         b = self.kur({"tamam": True, "yontem": "dugme", "sebep": ""})
         with mock.patch.object(ms, "site_sayfasi", return_value=b), mock.patch.object(ms.time, "sleep"):
-            ms.siteye_gonder("chatgpt", "x", True, sohbet_url="https://example.com/c/1")
+            with self.assertRaises(ms.SiteHatasi) as h:
+                ms.siteye_gonder("chatgpt", "x", True, sohbet_url="https://example.com/c/1")
+        self.assertIn("gönderilmedi", str(h.exception))
         b.git.assert_not_called()
+        b.yazi_ekle.assert_not_called()
+
+    def test_sohbet_url_sahibi_site_o_sohbete_gider(self):
+        b = self.kur({"tamam": True, "yontem": "dugme", "sebep": ""}, href="https://chatgpt.com/c/baska")
+        with mock.patch.object(ms, "site_sayfasi", return_value=b), mock.patch.object(ms.time, "sleep"):
+            ms.siteye_gonder("chatgpt", "x", True, sohbet_url="https://chatgpt.com/c/abc")
+        b.git.assert_called_once_with("https://chatgpt.com/c/abc")
+        b.yazi_ekle.assert_called_once_with("x")
+
+    def test_sohbet_url_baska_sitenin_ise_yeni_sohbete_gidilir(self):
+        # Y2a: ChatGPT sohbetindeyken Gemini de seçiliyse Gemini, açık olan eski sohbetine değil yeni sohbete yazar.
+        b = self.kur({"tamam": True, "yontem": "dugme", "sebep": ""}, site="gemini",
+                     href="https://gemini.google.com/app/eski-sohbet")
+        with mock.patch.object(ms, "site_sayfasi", return_value=b), mock.patch.object(ms.time, "sleep"):
+            ms.siteye_gonder("gemini", "x", True, sohbet_url="https://chatgpt.com/c/abc")
+        b.git.assert_called_once_with(siteler.SITELER["gemini"]["yeni_sohbet_adresi"])
+        b.yazi_ekle.assert_called_once_with("x")
+
+    def test_ortak_sohbette_kayitli_adrese_gidilir(self):
+        # Y2b: ikinci mesaj, ilk yanıttan sonra kaydedilen site adresine gider (pencere başka sohbette olsa da).
+        b = self.kur({"tamam": True, "yontem": "dugme", "sebep": ""}, href="https://chatgpt.com/c/baska")
+        with mock.patch.object(ms, "site_sayfasi", return_value=b), mock.patch.object(ms.time, "sleep"):
+            gonderilen, sorunlar, _, _ = ms.gonder({"konumlar": {}, "ek_uygulamalar": []}, "ikinci", ["chatgpt"], [],
+                                                   True, None, {"chatgpt": "https://chatgpt.com/c/kayitli"})
+        self.assertEqual((gonderilen, sorunlar), (["ChatGPT"], []))
+        b.git.assert_called_once_with("https://chatgpt.com/c/kayitli")
+        b.yazi_ekle.assert_called_once_with("ikinci")
+
+    def test_ortak_sohbette_adres_yoksa_yeni_sohbet(self):
+        # Kayıtlı adres yoksa pencere hangi sohbeti gösteriyorsa ona değil, yeni sohbet sayfasına yazılır.
+        b = self.kur({"tamam": True, "yontem": "dugme", "sebep": ""}, href="https://chatgpt.com/c/baska")
+        with mock.patch.object(ms, "site_sayfasi", return_value=b), mock.patch.object(ms.time, "sleep"):
+            ms.siteye_gonder("chatgpt", "x", True)
+        b.git.assert_called_once_with("https://chatgpt.com/")
+
+    def test_kayitli_adres_baska_siteninse_yazilmaz(self):
+        b = self.kur({"tamam": True, "yontem": "dugme", "sebep": ""})
+        with mock.patch.object(ms, "site_sayfasi", return_value=b), mock.patch.object(ms.time, "sleep"):
+            with self.assertRaises(ms.SiteHatasi):
+                ms.siteye_gonder("chatgpt", "x", True, site_adresi="https://chatgpt.com.kotu.net/c/1")
+        b.git.assert_not_called()
+        b.yazi_ekle.assert_not_called()
+
+    def test_gezinme_sonrasi_adres_uyusmazsa_yazilmaz(self):
+        # Y2c: sohbet adresine gidildi ama site başka sayfaya yönlendirdi (ör. silinmiş sohbet): yazılmaz.
+        b = self.kur({"tamam": True, "yontem": "dugme", "sebep": ""}, href="https://chatgpt.com/c/baska",
+                     gezince="https://chatgpt.com/")
+        with mock.patch.object(ms, "site_sayfasi", return_value=b), mock.patch.object(ms.time, "sleep"), \
+                mock.patch.object(ms, "ADRES_DOGRULAMA_SURESI", 0):
+            with self.assertRaises(ms.SiteHatasi) as h:
+                ms.siteye_gonder("chatgpt", "x", True, sohbet_url="https://chatgpt.com/c/abc")
+        self.assertIn("beklenen sohbete gitmedi", str(h.exception))
+        b.git.assert_called_once_with("https://chatgpt.com/c/abc")
+        b.yazi_ekle.assert_not_called()
+        self.assertNotIn(js("gonder"), [c.args[0] for c in b.degerlendir.call_args_list])
+        b.kapat.assert_called_once()
+
+    def test_gezinme_yavas_tamamlanirsa_beklenir(self):
+        # Page.navigate döndükten sonra adres bir süre eski kalabilir: hedefe varınca yazılır.
+        b = self.kur({"tamam": True, "yontem": "dugme", "sebep": ""}, href="https://chatgpt.com/c/baska")
+        adresler = iter(["https://chatgpt.com/c/baska", "https://chatgpt.com/c/baska", "https://chatgpt.com/c/abc"])
+        b.git.side_effect = None
+        onceki = b.degerlendir.side_effect
+
+        def degerlendir(js, zaman=30):
+            if js == "location.href":
+                return next(adresler, "https://chatgpt.com/c/abc")
+            return onceki(js, zaman)
+        b.degerlendir.side_effect = degerlendir
+        with mock.patch.object(ms, "site_sayfasi", return_value=b), mock.patch.object(ms.time, "sleep"):
+            ms.siteye_gonder("chatgpt", "x", True, sohbet_url="https://chatgpt.com/c/abc")
+        b.yazi_ekle.assert_called_once_with("x")
+
+    def test_yazmadan_once_adres_degistiyse_yazilmaz(self):
+        # Kutu beklenirken site başka sohbete geçerse (adres değişirse) yazılmaz.
+        b = self.kur({"tamam": True, "yontem": "dugme", "sebep": ""})
+        onceki = b.degerlendir.side_effect
+        okuma = []
+
+        def degerlendir(js, zaman=30):
+            if js == "location.href":
+                okuma.append(1)
+                return "https://chatgpt.com/" if len(okuma) == 1 else "https://chatgpt.com/c/baska"
+            return onceki(js, zaman)
+        b.degerlendir.side_effect = degerlendir
+        with mock.patch.object(ms, "site_sayfasi", return_value=b), mock.patch.object(ms.time, "sleep"):
+            with self.assertRaises(ms.SiteHatasi):
+                ms.siteye_gonder("chatgpt", "x", True)
+        b.yazi_ekle.assert_not_called()
+
+    def test_masaustu_gonderimi_kesin_pencere_ve_pano_geri_yukleme(self):
+        veri = {"konumlar": {}, "ek_uygulamalar": []}
+        olaylar = []
+        pencere = ms.pc.Pencere(77, 1, "ChatGPT", r"C:\x\ChatGPT.exe")
+        with mock.patch.object(ms.pc, "pencereleri_listele", return_value=[pencere]), \
+                mock.patch.object(ms.pc, "panoyu_oku", side_effect=lambda: olaylar.append("oku") or "eski pano"), \
+                mock.patch.object(ms.pc, "panoya_yaz", side_effect=lambda m: olaylar.append(("yaz", m))), \
+                mock.patch.object(ms.pc, "panoyu_geri_yukle", side_effect=lambda e: olaylar.append(("geri", e))), \
+                mock.patch.object(ms.pc, "pencere_bul_kesin",
+                                  side_effect=lambda u, acik: pencere if u["id"] == "chatgpt" else None), \
+                mock.patch.object(ms.pc, "yaziyi_gonder", side_effect=lambda h, k, enter: olaylar.append(("gonder", h))):
+            gonderilen, sorunlar, _, _ = ms.gonder(veri, "mesaj", [], ["chatgpt", "gemini"], True)
+        self.assertEqual(olaylar, ["oku", ("yaz", "mesaj"), ("gonder", 77), ("geri", "eski pano")])
+        self.assertEqual(gonderilen, ["ChatGPT"])
+        self.assertEqual(len(sorunlar), 1)
+        self.assertEqual(sorunlar[0]["ad"], "Gemini")
+        self.assertIn("kesin olarak bulunamadı", sorunlar[0]["sebep"])
+
+    def test_pano_hata_olsa_da_geri_yuklenir(self):
+        veri = {"konumlar": {}, "ek_uygulamalar": []}
+        pencere = ms.pc.Pencere(77, 1, "ChatGPT", r"C:\x\ChatGPT.exe")
+        with mock.patch.object(ms.pc, "pencereleri_listele", return_value=[pencere]), \
+                mock.patch.object(ms.pc, "panoyu_oku", return_value=None), \
+                mock.patch.object(ms.pc, "panoya_yaz"), \
+                mock.patch.object(ms.pc, "panoyu_geri_yukle") as geri, \
+                mock.patch.object(ms.pc, "pencere_bul_kesin", return_value=pencere), \
+                mock.patch.object(ms.pc, "yaziyi_gonder", side_effect=KeyError("beklenmedik")):
+            with self.assertRaises(KeyError):
+                ms.gonder(veri, "m", [], ["chatgpt"], True)
+        geri.assert_called_once_with(None)
 
     def test_gonder_toplami(self):
         veri = {"konumlar": {}, "ek_uygulamalar": []}
@@ -309,6 +475,92 @@ class GonderimTesti(unittest.TestCase):
         self.assertEqual(sorunlar, [{"ad": "Gemini", "sebep": "oturum açılmamış"}])
         self.assertEqual([(b["site"], b["taban"]) for b in bekleyen], [("chatgpt", 2)])
         self.assertFalse(one)
+
+
+class SiteAdresiKaydiTesti(unittest.TestCase):
+    """Y2b: ortak sohbette sitenin ilk yanıttan sonraki sohbet adresi kaydedilir."""
+
+    def sohbet(self):
+        veri = {"sohbetler": []}
+        sid, _ = ms.sohbete_ekle(veri, None, "ilk", ["ChatGPT"], [])
+        return veri, sid
+
+    def test_yanit_kaydedilince_adres_kaydedilir(self):
+        veri, sid = self.sohbet()
+        ms.yaniti_kaydet(veri, sid, 0, "chatgpt", "Yanıt", "https://chatgpt.com/c/abc#alt")
+        ms.yaniti_kaydet(veri, sid, 0, "claude", "Yanıt", "https://claude.ai/chat/u-1")
+        self.assertEqual(veri["sohbetler"][0]["site_adresleri"],
+                         {"chatgpt": "https://chatgpt.com/c/abc", "claude": "https://claude.ai/chat/u-1"})
+
+    def test_ilk_adres_korunur(self):
+        veri, sid = self.sohbet()
+        ms.yaniti_kaydet(veri, sid, 0, "chatgpt", "Yanıt", "https://chatgpt.com/c/abc")
+        self.assertFalse(ms.site_adresini_kaydet(veri["sohbetler"][0], "chatgpt", "https://chatgpt.com/c/baska"))
+        self.assertEqual(veri["sohbetler"][0]["site_adresleri"], {"chatgpt": "https://chatgpt.com/c/abc"})
+
+    def test_gecersiz_adresler_kaydedilmez(self):
+        veri, sid = self.sohbet()
+        sohbet = veri["sohbetler"][0]
+        for site, adres in [("chatgpt", "https://chatgpt.com/"),          # hâlâ yeni sohbet sayfası
+                            ("claude", "https://claude.ai/new"),
+                            ("chatgpt", "https://chatgpt.com.kotu.net/c/1"),  # başka alan adı
+                            ("chatgpt", "https://claude.ai/chat/1"),        # başka sitenin adresi
+                            ("chatgpt", "javascript:alert(1)"),
+                            ("yok", "https://chatgpt.com/c/1"),
+                            ("chatgpt", None)]:
+            with self.subTest(site=site, adres=adres):
+                self.assertFalse(ms.site_adresini_kaydet(sohbet, site, adres))
+        self.assertFalse(sohbet.get("site_adresleri"))
+        ms.yaniti_kaydet(veri, sid, 0, "chatgpt", "Yanıt")  # adres okunamadıysa yalnız yanıt kaydedilir
+        self.assertEqual(sohbet["mesajlar"][0]["yanitlar"], {"chatgpt": "Yanıt"})
+
+
+class GonderHttpBaglantisiTesti(unittest.TestCase):
+    """/api/gonder ve /api/yanit-kaydet, sohbetin site adreslerini gonder()'e iletir ve kaydeder."""
+
+    def setUp(self):
+        import tempfile
+        import threading
+        from http.server import ThreadingHTTPServer
+        klasor = Path(tempfile.mkdtemp(prefix="yzgonder_"))
+        self.addCleanup(__import__("shutil").rmtree, klasor, True)
+        yama = mock.patch.object(ms, "AYAR_DOSYASI", klasor / "ayar.json")
+        yama.start()
+        self.addCleanup(yama.stop)
+        ms.is_kilidi = threading.Lock()
+        self.sunucu = ThreadingHTTPServer(("127.0.0.1", 0), ms.Isleyici)
+        threading.Thread(target=self.sunucu.serve_forever, daemon=True).start()
+        self.addCleanup(self.sunucu.server_close)
+        self.addCleanup(self.sunucu.shutdown)
+
+    def post(self, yol, veri):
+        import json
+        import urllib.request
+        talep = urllib.request.Request(f"http://127.0.0.1:{self.sunucu.server_port}{yol}", json.dumps(veri).encode(),
+                                       {"Content-Type": "application/json", "X-YZ-Token": ms.BELIRTEC})
+        acici = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with acici.open(talep, timeout=10) as y:
+            return json.load(y)
+
+    def test_adres_kaydi_ve_ikinci_mesajda_kullanimi(self):
+        gelen = []
+
+        def sahte_gonder(veri, metin, site_idleri, program_idleri, enter, sohbet_url=None, site_adresleri=None):
+            gelen.append((sohbet_url, dict(site_adresleri or {})))
+            return ["ChatGPT"], [], [{"site": "chatgpt", "ad": "ChatGPT", "renk": "#000", "taban": 0}], False
+        ms.ayarlari_yaz({"secili": {"site:gemini": False, "site:claude": False}})
+        with mock.patch.object(ms, "gonder", sahte_gonder), mock.patch.object(ms, "kendi_pencere", return_value=None), \
+                mock.patch.object(ms, "site_konumu", return_value="https://chatgpt.com/c/yeni-1") as konum:
+            v = self.post("/api/gonder", {"metin": "ilk"})
+            sid = v["sohbet"]
+            self.post("/api/yanit-kaydet", {"sohbet": sid, "mesaj_sira": 0, "site": "chatgpt", "metin": "Yanıt"})
+            konum.assert_called_once_with("chatgpt")
+            sohbet = next(s for s in ms.ayarlari_oku()["sohbetler"] if s["id"] == sid)
+            self.assertEqual(sohbet["site_adresleri"], {"chatgpt": "https://chatgpt.com/c/yeni-1"})
+            self.post("/api/gonder", {"metin": "ikinci", "sohbet": sid})
+            self.post("/api/gonder", {"metin": "site sohbeti", "sohbet_url": "https://chatgpt.com/c/x"})
+        self.assertEqual(gelen, [(None, {}), (None, {"chatgpt": "https://chatgpt.com/c/yeni-1"}),
+                                 ("https://chatgpt.com/c/x", {})])
 
 
 class SiteKilidiTesti(unittest.TestCase):

@@ -26,6 +26,19 @@ kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
 user32.SetClipboardData.restype = wintypes.HANDLE
 user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
 user32.OpenClipboard.argtypes = [wintypes.HWND]
+user32.OpenClipboard.restype = wintypes.BOOL
+user32.CloseClipboard.restype = wintypes.BOOL
+user32.EmptyClipboard.restype = wintypes.BOOL
+user32.GetClipboardData.argtypes = [wintypes.UINT]
+user32.GetClipboardData.restype = wintypes.HANDLE
+user32.IsClipboardFormatAvailable.argtypes = [wintypes.UINT]
+user32.IsClipboardFormatAvailable.restype = wintypes.BOOL
+user32.RegisterClipboardFormatW.argtypes = [wintypes.LPCWSTR]
+user32.RegisterClipboardFormatW.restype = wintypes.UINT
+kernel32.GlobalSize.argtypes = [wintypes.HGLOBAL]
+kernel32.GlobalSize.restype = ctypes.c_size_t
+kernel32.GlobalFree.argtypes = [wintypes.HGLOBAL]
+kernel32.GlobalFree.restype = wintypes.HGLOBAL
 
 SW_RESTORE = 9
 SWP_NOZORDER = 0x0004
@@ -109,14 +122,41 @@ def pencereleri_listele():
     return sonuc
 
 
+TARAYICI_EXELERI = ("msedge.exe", "chrome.exe", "firefox.exe", "brave.exe", "opera.exe")
+# Tarayıcı penceresi başlıklarının sonundaki tarayıcı adı: "<sayfa başlığı> - Microsoft Edge".
+TARAYICI_ADLARI = ("microsoft edge", "google chrome", "mozilla firefox", "brave", "opera")
+
+
+def _tarayici_basligi_tam_mi(parca, baslik):
+    """Tarayıcı pencere başlığı, istenen parçayla TAM eşleşiyor mu?
+
+    Kabul edilenler: başlık tam olarak parça ("Grok"), ya da "<parça> - <tarayıcı adı>"
+    ("Grok - Microsoft Edge"). "ChatGPT hakkında bir haber - Microsoft Edge" gibi başlığında
+    parça geçen başka sayfalar kabul edilmez; böylece alakasız bir sekme yanlışlıkla hedef olmaz.
+    """
+    parca, baslik = parca.strip().lower(), baslik.strip().lower()
+    if baslik == parca:
+        return True
+    return any(baslik == f"{parca} - {ad}" for ad in TARAYICI_ADLARI)
+
+
 def eslesir_mi(uygulama, pencere):
-    """Pencere bu uygulamaya mı ait? exe adı, isteğe bağlı yol ve başlık parçasıyla karşılaştırılır."""
+    """Pencere bu uygulamaya mı ait? exe adı, isteğe bağlı yol ve başlık parçasıyla karşılaştırılır.
+
+    exe adı bir tarayıcıysa ve kayıtta `baslik_icerir` varsa başlık alt dize olarak değil, yalnızca
+    TAM olarak eşleşir (bkz. `_tarayici_basligi_tam_mi`). Tarayıcı olmayan programlarda başlık
+    parçası başlıkta geçmesi yeterlidir.
+    """
     if pencere.exe.lower() != uygulama["exe"].lower():
         return False
     if uygulama.get("yol_icerir") and uygulama["yol_icerir"].lower() not in pencere.yol.lower():
         return False
-    if uygulama.get("baslik_icerir") and uygulama["baslik_icerir"].lower() not in pencere.baslik.lower():
-        return False
+    parca = uygulama.get("baslik_icerir")
+    if parca:
+        if pencere.exe.lower() in TARAYICI_EXELERI:
+            return _tarayici_basligi_tam_mi(parca, pencere.baslik)
+        if parca.lower() not in pencere.baslik.lower():
+            return False
     return True
 
 
@@ -137,8 +177,23 @@ def _normal_alan(hwnd):
 
 
 def pencere_bul(uygulama, pencereler):
+    """Uygulamaya ait pencere; birden fazla aday varsa en büyüğü. YALNIZCA okuma/durum içindir.
+
+    Masaüstü programına yazı göndermeden önce `pencere_bul_kesin` kullanılmalıdır.
+    """
     adaylar = [p for p in pencereler if eslesir_mi(uygulama, p)]
     return max(adaylar, key=lambda p: _normal_alan(p.hwnd), default=None)
+
+
+def pencere_bul_kesin(uygulama, pencereler):
+    """Uygulamaya ait TEK pencere; hiç ya da birden fazla aday varsa None.
+
+    Yazı gönderme gibi geri alınamaz işlerde belirsizlik kabul edilmez: iki aday varsa hangisinin
+    doğru olduğu bilinemez, bu yüzden "en büyüğü seç" yerine None döner. Çağıran taraf None görünce
+    `PencereHatasi` fırlatıp kullanıcıdan programı tek pencerede açık bırakmasını istemelidir.
+    """
+    adaylar = [p for p in pencereler if eslesir_mi(uygulama, p)]
+    return adaylar[0] if len(adaylar) == 1 else None
 
 
 def uygulamayi_ac(uygulama):
@@ -202,25 +257,109 @@ def konum_hesapla(dortgen, nokta):
     return {"oran_x": round((nokta[0] - sol) / max(1, sag - sol), 3), "alttan": alt - nokta[1]}
 
 
-def panoya_yaz(metin):
-    """Yazıyı Windows panosuna koyar (Ctrl+V ile yapıştırılabilsin diye)."""
-    GMEM_MOVEABLE, CF_UNICODETEXT = 0x0002, 13
-    veri = metin.encode("utf-16-le") + b"\x00\x00"
-    for _ in range(10):  # başka bir program panoyu tutuyorsa kısa süre bekle
+GMEM_MOVEABLE, CF_UNICODETEXT = 0x0002, 13
+# Windows'un pano geçmişi / bulut panosu / pano izleyicileri bu biçimleri görünce içeriği kaydetmez.
+PANO_GIZLILIK_BICIMLERI = (
+    ("ExcludeClipboardContentFromMonitorProcessing", b"\x00"),  # veri önemsiz, varlığı yeterli
+    ("CanIncludeInClipboardHistory", b"\x00\x00\x00\x00"),   # DWORD 0: geçmişe ekleme
+    ("CanUploadToCloudClipboard", b"\x00\x00\x00\x00"),      # DWORD 0: bulut panosuna gönderme
+)
+
+
+def _pano_ac():
+    """Panoyu açar; başka program tutuyorsa kısa süre bekler. Çağıran CloseClipboard çağırmalıdır."""
+    for _ in range(10):
         if user32.OpenClipboard(None):
-            break
+            return
         time.sleep(0.05)
-    else:
-        raise PencereHatasi("pano başka bir program tarafından kilitli")
+    raise PencereHatasi("pano başka bir program tarafından kilitli")
+
+
+def _pano_veri_koy(bicim, veri):
+    """Açık panoya bayt verisini verilen biçimde koyar (pano açık olmalı)."""
+    tutamac = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(veri))
+    if not tutamac:
+        raise PencereHatasi("pano için bellek ayrılamadı")
+    adres = kernel32.GlobalLock(tutamac)
+    if not adres:
+        kernel32.GlobalFree(tutamac)
+        raise PencereHatasi("pano belleği kilitlenemedi")
+    ctypes.memmove(adres, veri, len(veri))
+    kernel32.GlobalUnlock(tutamac)
+    if not user32.SetClipboardData(bicim, tutamac):
+        kernel32.GlobalFree(tutamac)  # pano sahipliği almadıysa bellek bizde kalır
+        raise PencereHatasi("pano verisi yazılamadı")
+
+
+def panoyu_oku():
+    """Panodaki metni (CF_UNICODETEXT) döndürür; pano boşsa ya da metin içermiyorsa (resim vb.) None.
+
+    Gönderimden önce çağrılıp `panoyu_geri_yukle` ile geri verilmek üzere kullanıcının panosunu yedekler.
+    Yalnızca metin yedeklenir; başka biçimler (resim, dosya listesi) korunamaz.
+    """
+    _pano_ac()
     try:
-        user32.EmptyClipboard()
-        tutamac = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(veri))
+        if not user32.IsClipboardFormatAvailable(CF_UNICODETEXT):
+            return None
+        tutamac = user32.GetClipboardData(CF_UNICODETEXT)
+        if not tutamac:
+            return None
         adres = kernel32.GlobalLock(tutamac)
-        ctypes.memmove(adres, veri, len(veri))
-        kernel32.GlobalUnlock(tutamac)
-        user32.SetClipboardData(CF_UNICODETEXT, tutamac)
+        if not adres:
+            return None
+        try:
+            return ctypes.wstring_at(adres)
+        finally:
+            kernel32.GlobalUnlock(tutamac)
     finally:
         user32.CloseClipboard()
+
+
+def _pano_metin_yaz(metin, gizli):
+    veri = metin.encode("utf-16-le") + b"\x00\x00"
+    # Biçim numaraları pano açılmadan kaydedilebilir.
+    gizlilik = [(user32.RegisterClipboardFormatW(ad), v) for ad, v in PANO_GIZLILIK_BICIMLERI] if gizli else []
+    _pano_ac()
+    try:
+        user32.EmptyClipboard()
+        _pano_veri_koy(CF_UNICODETEXT, veri)
+        for bicim, v in gizlilik:
+            _pano_veri_koy(bicim, v)
+    finally:
+        user32.CloseClipboard()
+
+
+def panoya_yaz(metin):
+    """Yazıyı Windows panosuna koyar (Ctrl+V ile yapıştırılabilsin diye); pano geçmişine girmesin diye gizli yazılır.
+
+    Metinle birlikte `ExcludeClipboardContentFromMonitorProcessing`, `CanIncludeInClipboardHistory` (0) ve
+    `CanUploadToCloudClipboard` (0) biçimleri de konur: Windows pano geçmişi (Win+V), bulut panosu ve
+    pano izleyicileri bu mesajı saklamaz. Kullanım sırası (masaüstü gönderimi):
+
+        eski = panoyu_oku()        # kullanıcının panosunu yedekle
+        try:
+            panoya_yaz(mesaj)      # ... Ctrl+V ile yapıştır ...
+        finally:
+            panoyu_geri_yukle(eski)
+    """
+    _pano_metin_yaz(metin, gizli=True)
+
+
+def panoyu_geri_yukle(eski):
+    """`panoyu_oku()` ile yedeklenen metni panoya düz metin olarak geri koyar.
+
+    eski None ise (pano boştu ya da metin dışı içerik vardı) pano temizlenir; böylece gönderilen mesaj
+    panoda kalmaz. Geri yüklenen metin, kullanıcının kendi içeriği olduğu için gizlilik biçimleri
+    eklenmez.
+    """
+    if eski is None:
+        _pano_ac()
+        try:
+            user32.EmptyClipboard()
+        finally:
+            user32.CloseClipboard()
+        return
+    _pano_metin_yaz(eski, gizli=False)
 
 
 def fare_konumu():

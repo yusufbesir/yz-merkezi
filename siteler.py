@@ -7,8 +7,9 @@ ya da başka bir modüle bağımlı değildir.
 
 ÖNEMLİ: Seçiciler siteler güncellendikçe bozulabilir. Bir site arayüzünü değiştirirse
 yalnızca aşağıdaki `_AYARLAR` sözlüğündeki ilgili sitenin seçici listesini güncellemek
-yeterlidir; tek yer burasıdır. Her işlem için birkaç alternatif seçici ve genel bir
-yedek yöntem vardır, listedeki ilk sonuç veren seçici kullanılır.
+yeterlidir; tek yer burasıdır. Her işlem için birkaç alternatif seçici vardır, listedeki ilk sonuç veren seçici kullanılır.
+Yazma ve gönderme (yazı kutusu, gönder düğmesi, kenar çubuğu) için genel/tahmine dayalı yedek YOKTUR;
+yalnızca okuma işlemleri (mesajlar) yedek yöntem kullanır.
 
 Her JS parçası `js_sar` ile `(async () => { try { ... } catch ... })()` biçiminde sarılır;
 hata olursa `{"hata": "mesaj"}` döner, böylece Python tarafı hep geçerli JSON alır.
@@ -21,9 +22,17 @@ Dönüş değerleri (anahtar: değer):
 - mesajlar:           {"baslik": str, "mesajlar": [{"rol": "kullanici"|"asistan", "metin": str}]}
 - yaziyor_mu:         bool
 - yazi_kutusunu_bul:  {"tamam": bool, "tur": "contenteditable"|"textarea", "sebep": str}
+                      (yalnızca AYAR.yazi_kutusu seçicileriyle aranır, genel yedek YOKTUR; bulunan öğeye
+                      data-yz-kutu="1" işareti konur, diğerlerinden silinir)
 - gonder:             {"tamam": bool, "yontem": "dugme"|"enter_gerekli", "sebep": str}
-                      ("enter_gerekli" ise düğme tıklanmadı, çağıran taraf Enter göndermelidir)
+                      (düğme yalnızca işaretli kutunun formunda ya da en yakın 6 atası içinde aranır;
+                      "enter_gerekli" ise düğme tıklanmadı, çağıran taraf Enter göndermelidir)
 - son_yanit:          str
+- kutu_hazir_mi:      {"hazir": bool}  (odak işaretli yazı kutusunda ya da onun içinde mi)
+- kutu_metni:         str              (işaretli yazı kutusunun metni; kutu yoksa "")
+
+Kenar çubuğunu açmak yalnızca `js_parca(site, "sohbet_listesi", kenar_ac=True)` ile istenirse yapılır;
+varsayılan JS sayfada hiçbir düğmeye tıklamaz.
 """
 import hashlib
 import ipaddress
@@ -33,8 +42,11 @@ import urllib.parse
 
 JS_ANAHTARLARI = (
     "giris_var_mi", "sohbet_listesi", "mesajlar", "yaziyor_mu",
-    "yazi_kutusunu_bul", "gonder", "son_yanit",
+    "yazi_kutusunu_bul", "gonder", "son_yanit", "kutu_hazir_mi", "kutu_metni",
 )
+
+# js_parca ile çalışma anında değiştirilebilen ayarlar (başka anahtar kabul edilmez).
+_EK_AYAR_ANAHTARLARI = ("kenar_ac",)
 
 # Genel yedek: site özel desen bulunamazsa her sitedeki sohbet adresleri bu desenlerle aranır.
 # Her giriş (önek, düzenli ifade): ifadenin ilk grubu sohbet kimliğidir.
@@ -80,6 +92,10 @@ _AYARLAR = {
             'button[aria-label*="Gönder" i]',
             'button[aria-label*="Submit" i]',
             ".send-button",
+        ],
+        "kenar_dugmesi": [
+            'button[data-testid="open-sidebar-button"]',
+            'button[aria-label="Open sidebar"]',
         ],
     },
     "gemini": {
@@ -140,6 +156,10 @@ _AYARLAR = {
             'button[aria-label*="Submit" i]',
             ".send-button",
         ],
+        "kenar_dugmesi": [
+            'button[aria-label="Main menu"]',
+            'button[data-test-id="side-nav-menu-button"]',
+        ],
     },
     "claude": {
         "url_desenleri": [["", "/chat/([^/?#]+)"], ["proje-", "/project/([^/?#]+)"]],
@@ -186,6 +206,9 @@ _AYARLAR = {
             'button[aria-label*="Submit" i]',
             'button[type="submit"]',
         ],
+        "kenar_dugmesi": [
+            'button[aria-label*="sidebar" i]',
+        ],
     },
 }
 
@@ -231,13 +254,15 @@ const urlKimligi = (url) => {
 """
 
 _YAZI_YARDIMCI = r"""
+const KUTU_ISARETI = "data-yz-kutu";
 const yaziKutusuBul = () => {
-  let adaylar = ilkDolu(AYAR.yazi_kutusu, gorunur);
-  if (!adaylar.length) {
-    adaylar = sec('[contenteditable="true"], [contenteditable="plaintext-only"], textarea').filter(gorunur);
-  }
-  return adaylar.length ? adaylar[adaylar.length - 1] : null;
+  const adaylar = ilkDolu(AYAR.yazi_kutusu, gorunur);
+  const el = adaylar.length ? adaylar[adaylar.length - 1] : null;
+  sec("[" + KUTU_ISARETI + "]").forEach((o) => { if (o !== el) { o.removeAttribute(KUTU_ISARETI); } });
+  if (el) { el.setAttribute(KUTU_ISARETI, "1"); }
+  return el;
 };
+const isaretliKutu = () => sec("[" + KUTU_ISARETI + '="1"]').filter(gorunur)[0] || null;
 const kutuTuru = (el) => (el.tagName === "TEXTAREA" || el.tagName === "INPUT") ? "textarea" : "contenteditable";
 """
 
@@ -357,12 +382,8 @@ const topla = () => {
   return sonuc;
 };
 const kenarCubuguAc = async () => {
-  const ara = /sidebar|kenar|menü|menu/i;
-  const yok = /profil|profile|account|hesap|user|kullanıcı|settings|ayarlar/i;
-  const dugme = sec("button, [role='button']").filter(gorunur).find((b) => {
-    const e = temiz(b.getAttribute("aria-label") || b.getAttribute("title") || "");
-    return e !== "" && ara.test(e) && !yok.test(e);
-  });
+  if (AYAR.kenar_ac !== true) { return false; }
+  const dugme = ilkDolu(AYAR.kenar_dugmesi, gorunur)[0];
   if (!dugme) { return false; }
   dugme.click();
   return true;
@@ -430,24 +451,23 @@ return { tamam: true, tur: tur, sebep: "Yazı kutusu hazır" };
 
 _GONDER = r"""
 const etkin = (b) => !!b && gorunur(b) && !b.disabled && b.getAttribute("aria-disabled") !== "true";
-const a = document.activeElement;
-const kutu = (a && (a.isContentEditable || a.tagName === "TEXTAREA" || a.tagName === "INPUT")) ? a : yaziKutusuBul();
-const secenekler = AYAR.gonder.concat(['form button[type="submit"]']);
-const kapsamlar = [];
-if (kutu) {
-  const form = kutu.closest("form");
-  if (form) { kapsamlar.push(form); }
-  let ata = kutu;
-  for (let i = 0; i < 6 && ata.parentElement; i++) { ata = ata.parentElement; }
-  kapsamlar.push(ata);
+const kutu = isaretliKutu();
+if (!kutu) {
+  return { tamam: false, yontem: "enter_gerekli", sebep: "İşaretli yazı kutusu yok; Enter ile denenmeli" };
 }
-kapsamlar.push(document);
+// Düğme yalnızca bu kutunun formunda, form yoksa en yakın 6 atası içinde aranır; sayfanın geri kalanına bakılmaz.
+let kapsam = kutu.closest("form");
+if (!kapsam) {
+  kapsam = kutu;
+  for (let i = 0; i < 6 && kapsam.parentElement && kapsam.parentElement !== document.body
+       && kapsam.parentElement !== document.documentElement; i++) {
+    kapsam = kapsam.parentElement;
+  }
+}
 const dugmeBul = (suz) => {
-  for (const kapsam of kapsamlar) {
-    for (const s of secenekler) {
-      const b = sec(s, kapsam).filter(suz)[0];
-      if (b) { return b; }
-    }
+  for (const s of AYAR.gonder) {
+    const b = sec(s, kapsam).filter(suz)[0];
+    if (b) { return b; }
   }
   return null;
 };
@@ -473,6 +493,18 @@ const asistan = mesajlariTopla().filter((x) => x.rol === "asistan");
 return asistan.length ? kes(asistan[asistan.length - 1].metin, 20000) : "";
 """
 
+_KUTU_HAZIR_MI = r"""
+const kutu = isaretliKutu();
+const a = document.activeElement;
+return { hazir: !!kutu && !!a && (a === kutu || kutu.contains(a)) };
+"""
+
+_KUTU_METNI = r"""
+const kutu = isaretliKutu();
+if (!kutu) { return ""; }
+return kes((kutu.tagName === "TEXTAREA" || kutu.tagName === "INPUT") ? kutu.value : kutu.innerText, 100000);
+"""
+
 # anahtar -> (ek yardımcılar, gövde)
 _PARCALAR = {
     "giris_var_mi": ("", _GIRIS_VAR_MI),
@@ -482,6 +514,8 @@ _PARCALAR = {
     "yazi_kutusunu_bul": (_YAZI_YARDIMCI, _YAZI_KUTUSUNU_BUL),
     "gonder": (_YAZI_YARDIMCI, _GONDER),
     "son_yanit": (_MESAJ_YARDIMCI, _SON_YANIT),
+    "kutu_hazir_mi": (_YAZI_YARDIMCI, _KUTU_HAZIR_MI),
+    "kutu_metni": (_YAZI_YARDIMCI, _KUTU_METNI),
 }
 
 
@@ -503,10 +537,18 @@ def js_sar(parca):
     )
 
 
-def _parca_uret(site_id, anahtar):
-    """Bir sitenin bir işlemi için tam, sarılmış JS metnini üretir."""
+def _parca_uret(site_id, anahtar, ayar_ek=None):
+    """Bir sitenin bir işlemi için tam, sarılmış JS metnini üretir.
+
+    ayar_ek: sayfadaki AYAR nesnesine eklenecek/üzerine yazılacak değerler (yalnızca `_EK_AYAR_ANAHTARLARI`).
+    """
     ayar = dict(_AYARLAR[site_id])
     ayar["genel_desenler"] = _GENEL_DESENLER
+    ayar["kenar_ac"] = False  # varsayılan: sayfada kenar çubuğu düğmesine tıklanmaz
+    for ad, deger in (ayar_ek or {}).items():
+        if ad not in _EK_AYAR_ANAHTARLARI:
+            raise ValueError("Bilinmeyen ek ayar: %r (olanlar: %s)" % (ad, ", ".join(_EK_AYAR_ANAHTARLARI)))
+        ayar[ad] = deger
     ek, govde = _PARCALAR[anahtar]
     giris = "const AYAR = " + json.dumps(ayar, ensure_ascii=True) + ";\n"
     return js_sar(giris + _YARDIMCI + ek + govde)
@@ -527,6 +569,19 @@ def _kayit(site_id):
 
 
 SITELER = {site_id: _kayit(site_id) for site_id in _BILGILER}
+
+
+def js_parca(site_id, anahtar, **ayar_ek):
+    """Bir JS parçasını isteğe bağlı ek ayarlarla yeniden üretir.
+
+    Örnek: `js_parca("chatgpt", "sohbet_listesi", kenar_ac=True)` kenar çubuğunu açma düğmesine
+    (AYAR.kenar_dugmesi) tıklayabilen sürümü verir. Hazır `SITELER[site]["js"]` parçalarında kenar_ac
+    her zaman false'tur. Bilinmeyen site, anahtar ya da ayar adı için KeyError/ValueError fırlatır.
+    """
+    site(site_id)
+    if anahtar not in _PARCALAR:
+        raise KeyError("Bilinmeyen JS parçası: %r (olanlar: %s)" % (anahtar, ", ".join(JS_ANAHTARLARI)))
+    return _parca_uret(site_id, anahtar, ayar_ek)
 
 
 def site(site_id):

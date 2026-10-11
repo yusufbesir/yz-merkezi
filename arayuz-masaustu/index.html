@@ -92,6 +92,7 @@
           <div class="ayar-satir"><div><b>Adın</b><small>Karşılama mesajında kullanılır.</small></div><input id="ayarAd" maxlength="30"></div>
           <div class="ayar-satir"><div><b>Enter'a da bas</b><small>Kapalıysa mesaj yalnızca yapıştırılır, göndermeyi sen yaparsın.</small></div><label class="anahtar"><input type="checkbox" id="ayarEnter"><span></span></label></div>
           <div class="ayar-satir"><div><b>Gönderince kutuyu temizle</b><small>Mesaj gittikten sonra yazı kutusu boşalır.</small></div><label class="anahtar"><input type="checkbox" id="ayarTemizle"><span></span></label></div>
+          <div class="ayar-satir"><div><b>Çoklu hedefte onay iste</b><small>Birden fazla hesap seçiliyken ilk gönderimde "Şu hesaplara gidecek" diye bir kez sorar.</small></div><label class="anahtar"><input type="checkbox" id="ayarCokluOnay"><span></span></label></div>
           <div class="ayar-satir"><div><b>Yerleşim</b><small>"Yan yana diz" komutunda bu pencere nerede dursun?</small></div>
             <select id="ayarYerlesim"><option value="sol">Solda sütun</option><option value="alt">Altta çubuk</option></select></div>
         </section>
@@ -134,7 +135,7 @@
 
         <section data-sekme="hakkinda" hidden>
           <h2>Hakkında</h2>
-          <p class="aciklama">Yapay Zeka Merkezi, ChatGPT, Gemini ve Claude hesaplarını tek ekrandan kullanmanı sağlar. Web siteleri kendi profilinde (<code>.tarayici-profili</code>) açılır; oturum çerezleri yalnızca o profilde kalır, kullandığın Edge profiline dokunulmaz. API anahtarı yoktur: siteler kendi hesabınla çalışır. Bilgisayarda kurulu masaüstü programları yedek yol olarak durur. Ayarlar ve yerel sohbet geçmişi <code>masaustu-ayarlar.json</code> dosyasında saklanır.</p>
+          <p class="aciklama">Yapay Zeka Merkezi, ChatGPT, Gemini ve Claude hesaplarını tek ekrandan kullanmanı sağlar. Web siteleri kendi profilinde (<code>%LOCALAPPDATA%\YZMerkezi\tarayici-profili</code>) açılır; oturum çerezleri yalnızca o profilde kalır, kullandığın Edge profiline dokunulmaz. API anahtarı yoktur: siteler kendi hesabınla çalışır. Bilgisayarda kurulu masaüstü programları yedek yol olarak durur. Ayarlar ve yerel sohbet geçmişi <code>%LOCALAPPDATA%\YZMerkezi\masaustu-ayarlar.json</code> dosyasında saklanır.</p>
         </section>
       </div>
     </div>
@@ -143,11 +144,12 @@
   <!-- Program ekle -->
   <dialog id="programEkle" class="kucuk-pencere">
     <h2>Program ekle</h2>
-    <p class="aciklama">Yeni yapay zeka programını (ya da tarayıcıda açık bir sohbet sitesini) aç, sonra listeden seç.</p>
+    <p class="aciklama">Yeni yapay zeka programını aç, sonra listeden seç. Yalnızca açık ve bilgisayarına kurulu .exe programları eklenebilir.</p>
     <div class="form">
       <label>Açık pencere <select id="pencereSecimi"></select></label>
       <label>Görünecek ad <input id="yeniAd" placeholder="ör. Grok"></label>
       <label id="baslikAlani" hidden>Pencere başlığında hep geçen kelime <input id="yeniBaslik" placeholder="ör. Grok"></label>
+      <p id="tarayiciUyari" class="aciklama" hidden>Tarayıcılar program olarak eklenemez. ChatGPT, Gemini ve Claude web hesapları zaten kenar çubuğundan açılır.</p>
     </div>
     <div class="dugmeler"><button id="programEkleIptal">Vazgeç</button><button id="programEkleTamam" class="birincil">Ekle</button></div>
   </dialog>

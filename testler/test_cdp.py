@@ -1,10 +1,9 @@
-"""CDP istemcisi testleri: çerçeve kodlama, sahte WebSocket sunucusu ve (Edge varsa) gerçek bütünleşme.
+"""CDP boru istemcisi testleri: sahte "tarayıcı" (os.pipe ile iki uç) ve (Edge varsa) gerçek bütünleşme.
 
 Çalıştırma:  python -m unittest discover testler
 """
 import json
-import base64
-import hashlib
+import os
 import shutil
 import subprocess
 import sys
@@ -12,137 +11,72 @@ import tempfile
 import threading
 import time
 import unittest
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from socket import socket, AF_INET, SOCK_STREAM
 from unittest import mock
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import _ortam  # noqa: E402,F401  (profil/ayar yollarını geçici klasöre yönlendirir; modüllerden önce)
 import cdp  # noqa: E402
 import tarayici  # noqa: E402
 
 
-# ---------------------------------------------------------------- çerçeve kodlama/çözme
+# ---------------------------------------------------------------- sahte tarayıcı
 
-class CerceveTesti(unittest.TestCase):
-    def test_rfc_ornekleri(self):
-        # RFC 6455 bölüm 5.7: "Hello" maskesiz ve maskeli
-        self.assertEqual(cdp.cerceve_olustur("Hello", maskeli=False), bytes.fromhex("810548656c6c6f"))
-        self.assertEqual(cdp.cerceve_olustur("Hello", maskeli=True, maske=bytes.fromhex("37fa213d")),
-                         bytes.fromhex("818537fa213d7f9f4d5158"))
+class SahteTarayici:
+    """Bizim BoruBaglantisi'na karşı uçta duran sahte tarayıcı.
 
-    def test_uzunluk_siniflari_gidis_donus(self):
-        for n, baslik_boyu in [(0, 2), (5, 2), (125, 2), (126, 4), (65535, 4), (65536, 10), (100000, 10)]:
-            for maskeli in (False, True):
-                yuk = bytes(i % 251 for i in range(n))
-                veri = cdp.cerceve_olustur(yuk, cdp.OP_IKILI, maskeli=maskeli)
-                self.assertEqual(len(veri), baslik_boyu + (4 if maskeli else 0) + n, (n, maskeli))
-                c = cdp.cerceve_coz(veri)
-                self.assertEqual((c.son, c.opkod, c.yuk, c.maskeli, c.uzunluk),
-                                 (True, cdp.OP_IKILI, yuk, maskeli, len(veri)), (n, maskeli))
-
-    def test_uzunluk_basligi_bicimleri(self):
-        self.assertEqual(cdp.cerceve_olustur(b"x" * 125, maskeli=False)[1], 125)
-        self.assertEqual(cdp.cerceve_olustur(b"x" * 126, maskeli=False)[1], 126)
-        self.assertEqual(cdp.cerceve_olustur(b"x" * 65536, maskeli=False)[1], 127)
-
-    def test_maskeleme_yuku_degistirir(self):
-        yuk = b"gizli yazi"
-        veri = cdp.cerceve_olustur(yuk, maskeli=True, maske=b"\x01\x02\x03\x04")
-        self.assertEqual(veri[1] & 0x80, 0x80)  # maske biti
-        self.assertNotIn(yuk, veri)
-        self.assertEqual(cdp.cerceve_coz(veri).yuk, yuk)
-
-    def test_eksik_veri_none_doner(self):
-        veri = cdp.cerceve_olustur(b"a" * 300, maskeli=True)
-        for kesim in (0, 1, 3, 5, 100, len(veri) - 1):
-            self.assertIsNone(cdp.cerceve_coz(veri[:kesim]), kesim)
-
-    def test_art_arda_cerceveler(self):
-        tampon = bytearray(cdp.cerceve_olustur("bir", maskeli=False) + cdp.cerceve_olustur("iki", maskeli=False) + b"\x81")
-        ilk = cdp.cerceve_coz(tampon)
-        del tampon[:ilk.uzunluk]
-        ikinci = cdp.cerceve_coz(tampon)
-        del tampon[:ikinci.uzunluk]
-        self.assertEqual((ilk.yuk, ikinci.yuk), (b"bir", b"iki"))
-        self.assertIsNone(cdp.cerceve_coz(tampon))
-
-    def test_parca_bayragi(self):
-        c = cdp.cerceve_coz(cdp.cerceve_olustur("a", cdp.OP_METIN, maskeli=False, son=False))
-        self.assertFalse(c.son)
-        self.assertEqual(c.opkod, cdp.OP_METIN)
-
-    def test_asiri_buyuk_uzunluk_reddedilir(self):
-        veri = bytes([0x82, 127]) + (cdp.EN_BUYUK_YUK + 1).to_bytes(8, "big")
-        with self.assertRaises(cdp.CdpHatasi):
-            cdp.cerceve_coz(veri)
-
-
-# ---------------------------------------------------------------- sahte WebSocket sunucusu
-
-class SahteSunucu:
-    """Tek bağlantı kabul eden, el sıkışmayı yapan ve gelen JSON komutlarına `davranis` ile yanıt veren sunucu.
-
-    davranis(istek, sunucu) -> gönderilecek ham çerçeve baytları listesi.
+    İki anonim boru açılır; ayrı bir thread gelen `\\0` ayraçlı komutları okur, `gelenler` listesine ekler ve
+    `davranis(istek, sahte)` ile dönen mesajları (sözlük ya da ham bayt) geri yazar.
     """
 
-    def __init__(self, davranis, el_sikisma_kodu="101 Switching Protocols", kotu_accept=False):
-        self.davranis, self.kod, self.kotu_accept = davranis, el_sikisma_kodu, kotu_accept
-        self.gelenler = []  # (opkod, maskeli_mi, çözülmüş yük)
-        self.dinleyici = socket(AF_INET, SOCK_STREAM)
-        self.dinleyici.bind(("127.0.0.1", 0))
-        self.dinleyici.listen(1)
-        self.port = self.dinleyici.getsockname()[1]
-        self.ws_url = f"ws://127.0.0.1:{self.port}/devtools/page/TEST"
-        self.istek_satiri = ""
+    def __init__(self, davranis):
+        self.davranis = davranis
+        self.gelenler = []
+        self._t_okur, biz_yazariz = os.pipe()
+        biz_okuruz, self._t_yazar = os.pipe()
+        self._yazma_kilidi = threading.Lock()
+        self._yazma_kapali = False
+        self.eof_goruldu = threading.Event()
         threading.Thread(target=self._calis, daemon=True).start()
+        self.boru = cdp.BoruBaglantisi(biz_okuruz, biz_yazariz)
 
     def _calis(self):
+        tampon = bytearray()
         try:
-            baglanti, _ = self.dinleyici.accept()
+            while True:
+                parca = os.read(self._t_okur, 65536)
+                if not parca:
+                    break
+                tampon += parca
+                while b"\0" in tampon:
+                    i = tampon.index(b"\0")
+                    istek = json.loads(bytes(tampon[:i]).decode("utf-8"))
+                    del tampon[:i + 1]
+                    self.gelenler.append(istek)
+                    for cevap in self.davranis(istek, self) or []:
+                        self.yaz(cevap)
         except OSError:
-            return
-        with baglanti:
-            baglanti.settimeout(5)
-            veri = bytearray()
-            try:
-                while b"\r\n\r\n" not in veri:
-                    veri += baglanti.recv(4096)
-                baslik, _, veri = bytes(veri).partition(b"\r\n\r\n")
-                veri = bytearray(veri)
-                satirlar = baslik.decode("latin-1").split("\r\n")
-                self.istek_satiri = satirlar[0]
-                anahtar = next(s.split(":", 1)[1].strip() for s in satirlar if s.lower().startswith("sec-websocket-key"))
-                kabul = base64.b64encode(hashlib.sha1((anahtar + cdp.WS_ANAHTAR_EKI).encode()).digest()).decode()
-                if self.kotu_accept:
-                    kabul = "yanlis"
-                baglanti.sendall((f"HTTP/1.1 {self.kod}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
-                                  f"Sec-WebSocket-Accept: {kabul}\r\n\r\n").encode())
-                if not self.kod.startswith("101"):
-                    return
-                while True:
-                    c = cdp.cerceve_coz(veri)
-                    if c is None:
-                        yeni = baglanti.recv(65536)
-                        if not yeni:
-                            return
-                        veri += yeni
-                        continue
-                    del veri[:c.uzunluk]
-                    self.gelenler.append((c.opkod, c.maskeli, c.yuk))
-                    if c.opkod == cdp.OP_KAPAT:
-                        return
-                    if c.opkod == cdp.OP_METIN:
-                        for cerceve in self.davranis(json.loads(c.yuk), self):
-                            baglanti.sendall(cerceve)
-            except (OSError, StopIteration):
-                return
+            pass
+        finally:
+            self.eof_goruldu.set()
+            os.close(self._t_okur)
+            self.yazmayi_kapat()
 
-    def kapat(self):
-        self.dinleyici.close()
+    def yaz(self, mesaj):
+        veri = mesaj if isinstance(mesaj, bytes) else json.dumps(mesaj).encode("utf-8") + b"\0"
+        with self._yazma_kilidi:
+            if not self._yazma_kapali:
+                os.write(self._t_yazar, veri)
+
+    def yazmayi_kapat(self):
+        """Tarayıcı kapandı gibi: bizim okuyucumuz EOF görür."""
+        with self._yazma_kilidi:
+            if not self._yazma_kapali:
+                self._yazma_kapali = True
+                os.close(self._t_yazar)
 
     def bekle(self, kosul, sure=2):
-        """Gelen çerçevelerde koşul sağlanana dek bekler (testler eşzamansız izlenen şeyi doğrulasın diye)."""
         bitis = time.monotonic() + sure
         while time.monotonic() < bitis:
             if any(kosul(g) for g in list(self.gelenler)):
@@ -151,209 +85,384 @@ class SahteSunucu:
         return False
 
 
-def sunucusuz_sonuc(deger):
-    """Her komuta {"result": {"result": {"value": deger}}} yanıtı veren davranış."""
-    return lambda istek, s: [cdp.cerceve_olustur(json.dumps({"id": istek["id"], "result": {"result": {"value": deger}}}),
-                                                  maskeli=False)]
+def sonuc_ver(deger):
+    """Her komuta {"result": {"result": {"value": deger}}} yanıtı veren davranış (sessionId korunur)."""
+    def davranis(istek, s):
+        yanit = {"id": istek["id"], "result": {"result": {"value": deger}}}
+        if "sessionId" in istek:
+            yanit["sessionId"] = istek["sessionId"]
+        return [yanit]
+    return davranis
 
 
-class BaglantiTesti(unittest.TestCase):
-    def kur(self, davranis, **kw):
-        sunucu = SahteSunucu(davranis, **kw)
-        self.addCleanup(sunucu.kapat)
-        return sunucu
+class BoruTabani(unittest.TestCase):
+    def kur(self, davranis):
+        s = SahteTarayici(davranis)
+        self.addCleanup(s.boru.kapat)
+        self.addCleanup(s.yazmayi_kapat)
+        return s
 
-    def baglan(self, sunucu):
-        b = cdp.Baglanti(sunucu.ws_url, zaman=3)
-        self.addCleanup(b.kapat)
-        return b
 
+class BoruBaglantisiTesti(BoruTabani):
     def test_komut_ve_degerlendir(self):
-        sunucu = self.kur(sunucusuz_sonuc(42))
-        b = self.baglan(sunucu)
-        self.assertEqual(b.komut("Runtime.evaluate", expression="1+41"), {"result": {"value": 42}})
-        self.assertEqual(b.degerlendir("1+41"), 42)
-        # istemci çerçeveleri maskeli, kimlikler artan ve parametreler doğru olmalı
-        metinler = [(m, json.loads(y)) for o, m, y in sunucu.gelenler if o == cdp.OP_METIN]
-        self.assertTrue(all(m for m, _ in metinler))
-        self.assertEqual([i["id"] for _, i in metinler], [1, 2])
-        self.assertEqual(metinler[1][1]["method"], "Runtime.evaluate")
-        self.assertEqual(metinler[1][1]["params"], {"expression": "1+41", "returnByValue": True, "awaitPromise": True})
-        self.assertIn("/devtools/page/TEST", sunucu.istek_satiri)
+        s = self.kur(sonuc_ver(42))
+        self.assertEqual(s.boru.komut("Runtime.evaluate", expression="1+41"), {"result": {"value": 42}})
+        self.assertEqual([g["id"] for g in s.gelenler], [1])
+        self.assertEqual(s.gelenler[0], {"id": 1, "method": "Runtime.evaluate", "params": {"expression": "1+41"}})
+        self.assertNotIn("sessionId", s.gelenler[0])
+        s.boru.komut("Browser.getVersion")
+        self.assertEqual([g["id"] for g in s.gelenler], [1, 2])  # kimlikler artar
 
-    def test_olaylar_son_olaylara_gider(self):
-        def davranis(istek, s):
-            olay = {"method": "Page.loadEventFired", "params": {"timestamp": 1}}
-            yanit = {"id": istek["id"], "result": {"x": 1}}
-            baska = {"id": 999, "result": {}}  # başkasına ait yanıt yok sayılır
-            return [cdp.cerceve_olustur(json.dumps(m), maskeli=False) for m in (olay, baska, yanit)]
-        b = self.baglan(self.kur(davranis))
-        self.assertEqual(b.komut("Page.enable"), {"x": 1})
-        self.assertEqual([o["method"] for o in b.son_olaylar], ["Page.loadEventFired"])
+    def test_yanitlar_kimlige_gore_eslenir_sira_karisik_olsa_da(self):
+        bekleyen = []
 
-    def test_hata_yaniti_cdp_hatasi_firlatir(self):
         def davranis(istek, s):
-            return [cdp.cerceve_olustur(json.dumps({"id": istek["id"], "error": {"code": -32601, "message": "yok boyle komut"}}),
-                                        maskeli=False)]
-        b = self.baglan(self.kur(davranis))
+            bekleyen.append(istek)
+            if len(bekleyen) < 2:
+                return []
+            # iki komut da geldi: ters sırayla, araya başkasının yanıtını ve bir olayı katarak yanıtla
+            return ([{"id": 999, "result": {"kim": "kimse"}}, {"method": "Page.loadEventFired", "params": {}}]
+                    + [{"id": i["id"], "result": {"kim": i["params"]["ad"]}} for i in reversed(bekleyen)])
+        s = self.kur(davranis)
+        sonuclar = {}
+
+        def calistir(ad):
+            sonuclar[ad] = s.boru.komut("Deneme.komut", zaman=5, ad=ad)
+        isler = [threading.Thread(target=calistir, args=(ad,)) for ad in ("bir", "iki")]
+        for i in isler:
+            i.start()
+            time.sleep(0.05)
+        for i in isler:
+            i.join(5)
+        self.assertEqual(sonuclar, {"bir": {"kim": "bir"}, "iki": {"kim": "iki"}})
+        self.assertEqual([o["method"] for o in s.boru.olaylar], ["Page.loadEventFired"])
+
+    def test_parcali_ve_birlesik_mesajlar(self):
+        def davranis(istek, s):
+            tam = json.dumps({"id": istek["id"], "result": {"result": {"value": "ö" * 3000}}}).encode("utf-8") + b"\0"
+            olay = json.dumps({"method": "Olay.bir", "params": {}}).encode() + b"\0"
+            for i in range(0, len(tam), 700):  # yanıt birkaç parçada gelir
+                s.yaz(tam[i:i + 700])
+                time.sleep(0.01)
+            s.yaz(olay + olay)  # iki mesaj tek yazımda
+            return []
+        s = self.kur(davranis)
+        self.assertEqual(cdp.Oturum(s.boru, "H", "O").degerlendir("x"), "ö" * 3000)
+        self.assertTrue(self._bekle(lambda: len(s.boru.olaylar) == 2))
+
+    def _bekle(self, kosul, sure=2):
+        bitis = time.monotonic() + sure
+        while time.monotonic() < bitis:
+            if kosul():
+                return True
+            time.sleep(0.02)
+        return False
+
+    def test_bozuk_mesaj_atlanir(self):
+        def davranis(istek, s):
+            return [b"{bozuk json\0", b"[1,2]\0", {"id": istek["id"], "result": {"tamam": True}}]
+        s = self.kur(davranis)
+        self.assertEqual(s.boru.komut("X.y"), {"tamam": True})
+        self.assertTrue(s.boru.canli_mi())
+
+    def test_hata_yaniti_cdp_hatasi(self):
+        s = self.kur(lambda i, s: [{"id": i["id"], "error": {"code": -32601, "message": "yok boyle komut"}}])
         with self.assertRaises(cdp.CdpHatasi) as h:
-            b.komut("Bilinmeyen.komut")
+            s.boru.komut("Bilinmeyen.komut")
         self.assertIn("yok boyle komut", str(h.exception))
+        self.assertIn("-32601", str(h.exception))
 
-    def test_js_istisnasi_cdp_hatasi_firlatir(self):
-        def davranis(istek, s):
-            sonuc = {"result": {"type": "object"}, "exceptionDetails": {"text": "Uncaught",
-                     "exception": {"description": "ReferenceError: x is not defined"}}}
-            return [cdp.cerceve_olustur(json.dumps({"id": istek["id"], "result": sonuc}), maskeli=False)]
-        b = self.baglan(self.kur(davranis))
+    def test_js_istisnasi_cdp_hatasi(self):
+        sonuc = {"result": {"type": "object"},
+                 "exceptionDetails": {"text": "Uncaught", "exception": {"description": "ReferenceError: x is not defined"}}}
+        s = self.kur(lambda i, s: [{"id": i["id"], "sessionId": i.get("sessionId"), "result": sonuc}])
         with self.assertRaises(cdp.CdpHatasi) as h:
-            b.degerlendir("x")
+            cdp.Oturum(s.boru, "H", "O").degerlendir("x")
         self.assertIn("ReferenceError", str(h.exception))
 
-    def test_parcali_yanit_ve_ping(self):
+    def test_zaman_asimi_ve_gec_yanit_atilir(self):
+        ilk = []
+
         def davranis(istek, s):
-            tam = json.dumps({"id": istek["id"], "result": {"result": {"value": "ö" * 200}}}).encode("utf-8")
-            a, o, u = tam[:30], tam[30:100], tam[100:]
-            return [cdp.cerceve_olustur(a, cdp.OP_METIN, maskeli=False, son=False),
-                    cdp.cerceve_olustur(b"nabiz", cdp.OP_PING, maskeli=False),  # parçalar arasında ping
-                    cdp.cerceve_olustur(o, cdp.OP_DEVAM, maskeli=False, son=False),
-                    cdp.cerceve_olustur(u, cdp.OP_DEVAM, maskeli=False, son=True)]
-        sunucu = self.kur(davranis)
-        b = self.baglan(sunucu)
-        self.assertEqual(b.degerlendir("x"), "ö" * 200)
-        self.assertTrue(sunucu.bekle(lambda g: g[0] == cdp.OP_PONG and g[1] and g[2] == b"nabiz"), "pong gelmedi")
-
-    def test_buyuk_yanit_126_ve_127_bicimleri(self):
-        for n in (300, 70000):
-            sunucu = self.kur(sunucusuz_sonuc("a" * n))
-            b = self.baglan(sunucu)
-            self.assertEqual(b.degerlendir("x"), "a" * n)
-
-    def test_buyuk_istek_gonderilir(self):
-        sunucu = self.kur(sunucusuz_sonuc(1))
-        b = self.baglan(sunucu)
-        b.yazi_ekle("b" * 70000)
-        istek = json.loads(next(y for o, m, y in sunucu.gelenler if o == cdp.OP_METIN))
-        self.assertEqual(istek["method"], "Input.insertText")
-        self.assertEqual(len(istek["params"]["text"]), 70000)
-
-    def test_tus_iki_olay_gonderir(self):
-        sunucu = self.kur(sunucusuz_sonuc(1))
-        b = self.baglan(sunucu)
-        b.tus("Enter", "Enter", 13, "\r")
-        istekler = [json.loads(y) for o, m, y in sunucu.gelenler if o == cdp.OP_METIN]
-        self.assertEqual([i["params"]["type"] for i in istekler], ["keyDown", "keyUp"])
-        self.assertEqual(istekler[0]["params"]["text"], "\r")
-        self.assertEqual(istekler[0]["params"]["windowsVirtualKeyCode"], 13)
-        self.assertNotIn("text", istekler[1]["params"])
-
-    def test_zaman_asimi(self):
-        b = self.baglan(self.kur(lambda istek, s: []))  # hiç yanıt vermez
+            if not ilk:  # ilk komut yanıtsız kalır; yanıtı ikinci komutla birlikte (geç) gelir
+                ilk.append(istek["id"])
+                return []
+            return [{"id": ilk[0], "result": {"gec": True}}, {"id": istek["id"], "result": {"ikinci": True}}]
+        s = self.kur(davranis)
+        baslangic = time.monotonic()
         with self.assertRaises(cdp.CdpHatasi) as h:
-            b.komut("Page.enable", zaman=0.3)
+            s.boru.komut("Page.enable", zaman=0.3)
+        self.assertLess(time.monotonic() - baslangic, 2)
         self.assertIn("zaman aşımı", str(h.exception))
+        self.assertEqual(s.boru.komut("Page.enable"), {"ikinci": True})
+        self.assertTrue(s.boru.canli_mi())
 
-    def test_close_cercevesi(self):
-        b = self.baglan(self.kur(lambda istek, s: [cdp.cerceve_olustur(b"\x03\xe8", cdp.OP_KAPAT, maskeli=False)]))
+    def test_eof_turkce_hata_ve_bekleyen_uyanir(self):
+        s = self.kur(lambda i, s: [])  # hiç yanıt vermez
+        hata = []
+
+        def bekle():
+            try:
+                s.boru.komut("Browser.getVersion", zaman=10)
+            except cdp.CdpHatasi as h:
+                hata.append(str(h))
+        t = threading.Thread(target=bekle)
+        t.start()
+        self.assertTrue(s.bekle(lambda g: g["method"] == "Browser.getVersion"))
+        baslangic = time.monotonic()
+        s.yazmayi_kapat()  # tarayıcı kapandı
+        t.join(5)
+        self.assertLess(time.monotonic() - baslangic, 2, "bekleyen komut EOF ile hemen uyanmalı")
+        self.assertEqual(hata, ["Tarayıcı bağlantıyı kapattı."])
+        self.assertTrue(s.boru.kapali)
+        self.assertFalse(s.boru.canli_mi())
+        with self.assertRaises(cdp.CdpHatasi) as h:  # kapandıktan sonra komut verilemez
+            s.boru.komut("Browser.getVersion")
+        self.assertIn("kapattı", str(h.exception))
+
+    def test_kapat_karsi_uca_eof_gonderir(self):
+        s = self.kur(sonuc_ver(1))
+        s.boru.kapat()
+        self.assertTrue(s.eof_goruldu.wait(2), "sahte tarayıcı EOF görmeli (gerçek Edge bu durumda kapanır)")
+        self.assertTrue(s.boru.kapali)
         with self.assertRaises(cdp.CdpHatasi):
-            b.komut("Page.enable")
-        with self.assertRaises(cdp.CdpHatasi):  # kapandıktan sonra komut verilemez
-            b.komut("Page.enable")
+            s.boru.komut("X.y")
 
-    def test_el_sikisma_reddedilirse(self):
-        sunucu = self.kur(lambda i, s: [], el_sikisma_kodu="403 Forbidden")
+    def test_kapat_tarayiciyi_kapat_browser_close_gonderir(self):
+        s = self.kur(lambda i, s: [{"id": i["id"], "result": {}}])
+        s.boru.kapat(tarayiciyi_kapat=True)
+        self.assertEqual([g["method"] for g in s.gelenler], ["Browser.close"])
+
+    def test_olay_siniri(self):
+        def davranis(istek, s):
+            return [{"method": "Olay.n", "params": {"n": n}} for n in range(250)] + [{"id": istek["id"], "result": {}}]
+        s = self.kur(davranis)
+        s.boru.komut("X.y")
+        self.assertEqual(len(s.boru.olaylar), cdp.OLAY_SINIRI)
+        self.assertEqual(s.boru.olaylar[-1]["params"]["n"], 249)
+        self.assertEqual(s.boru.olaylar[0]["params"]["n"], 250 - cdp.OLAY_SINIRI)
+
+    def test_buyuk_istek_tek_mesaj(self):
+        s = self.kur(sonuc_ver(1))
+        cdp.Oturum(s.boru, "H", "O").yazi_ekle("b" * 70000)
+        self.assertEqual(s.gelenler[0]["method"], "Input.insertText")
+        self.assertEqual(len(s.gelenler[0]["params"]["text"]), 70000)
+
+    def test_metindeki_nul_ayraci_bozmaz(self):
+        s = self.kur(sonuc_ver(1))
+        cdp.Oturum(s.boru, "H", "O").yazi_ekle("a\0b")
+        self.assertEqual(s.gelenler[0]["params"]["text"], "a\0b")
+
+
+class OturumTesti(BoruTabani):
+    @staticmethod
+    def tarayici_davranisi(istek, s):
+        """attachToTarget'e olay + oturum kimliği, detachFromTarget'e olay döner; diğerlerine değer 7."""
+        yontem = istek["method"]
+        if yontem == "Target.attachToTarget":
+            return [{"method": "Target.attachedToTarget",
+                     "params": {"sessionId": "OT1", "targetInfo": {"targetId": istek["params"]["targetId"]}}},
+                    {"id": istek["id"], "result": {"sessionId": "OT1"}}]
+        if yontem == "Target.detachFromTarget":
+            return [{"method": "Target.detachedFromTarget", "params": {"sessionId": istek["params"]["sessionId"]}},
+                    {"id": istek["id"], "result": {}}]
+        return sonuc_ver(7)(istek, s)
+
+    def test_sessionid_yonlendirme_ve_oturum_takibi(self):
+        s = self.kur(self.tarayici_davranisi)
+        o = cdp.sekmeye_baglan(s.boru, "HEDEF")
+        self.assertEqual(s.gelenler[0], {"id": 1, "method": "Target.attachToTarget",
+                                         "params": {"targetId": "HEDEF", "flatten": True}})
+        self.assertEqual((o.hedef_id, o.oturum_id), ("HEDEF", "OT1"))
+        self.assertEqual(s.boru.oturumlar, {"OT1": "HEDEF"})
+        self.assertEqual(o.degerlendir("1+6"), 7)
+        istek = s.gelenler[-1]
+        self.assertEqual(istek["sessionId"], "OT1")  # sekme komutu oturuma gider
+        self.assertEqual(istek["params"], {"expression": "1+6", "returnByValue": True, "awaitPromise": True})
+        o.kapat()
+        ayril = s.gelenler[-1]
+        self.assertEqual(ayril["method"], "Target.detachFromTarget")
+        self.assertEqual(ayril["params"], {"sessionId": "OT1"})  # parametre olarak, tarayıcı düzeyinde
+        self.assertNotIn("sessionId", ayril)
+        self.assertEqual(s.boru.oturumlar, {})
+        with self.assertRaises(cdp.CdpHatasi):  # kapalı oturuma komut verilemez
+            o.degerlendir("1")
+        o.kapat()  # ikinci kapatma sessizdir
+        self.assertEqual(sum(1 for g in s.gelenler if g["method"] == "Target.detachFromTarget"), 1)
+
+    def test_git_tus_one_getir(self):
+        s = self.kur(lambda i, s: [{"id": i["id"], "sessionId": i.get("sessionId"), "result": {"frameId": "F"}}])
+        o = cdp.Oturum(s.boru, "H", "OT")
+        with mock.patch.object(cdp.time, "sleep"):
+            o.git("https://chatgpt.com/")
+        o.tus("Enter", "Enter", 13, "\r")
+        o.one_getir()
+        yontemler = [(g["method"], g.get("sessionId")) for g in s.gelenler]
+        self.assertEqual(yontemler, [("Page.navigate", "OT"), ("Input.dispatchKeyEvent", "OT"),
+                                     ("Input.dispatchKeyEvent", "OT"), ("Page.bringToFront", "OT")])
+        self.assertEqual([g["params"]["type"] for g in s.gelenler[1:3]], ["keyDown", "keyUp"])
+        self.assertEqual(s.gelenler[1]["params"]["text"], "\r")
+        self.assertNotIn("text", s.gelenler[2]["params"])
+
+    def test_git_hata_metni(self):
+        s = self.kur(lambda i, s: [{"id": i["id"], "result": {"errorText": "net::ERR_NAME_NOT_RESOLVED"}}])
         with self.assertRaises(cdp.CdpHatasi) as h:
-            cdp.Baglanti(sunucu.ws_url, zaman=3)
-        self.assertIn("403", str(h.exception))
-
-    def test_yanlis_accept_reddedilir(self):
-        sunucu = self.kur(lambda i, s: [], kotu_accept=True)
-        with self.assertRaises(cdp.CdpHatasi):
-            cdp.Baglanti(sunucu.ws_url, zaman=3)
-
-    def test_baglanti_yoksa(self):
-        s = socket(AF_INET, SOCK_STREAM)
-        s.bind(("127.0.0.1", 0))
-        port = s.getsockname()[1]
-        s.close()  # dinleyen kimse yok
-        with self.assertRaises(cdp.CdpHatasi):
-            cdp.Baglanti(f"ws://127.0.0.1:{port}/x", zaman=1)
+            cdp.Oturum(s.boru, "H", "OT").git("https://yok.example/")
+        self.assertIn("Sayfa açılamadı", str(h.exception))
 
 
-# ---------------------------------------------------------------- HTTP uçları (sahte DevTools sunucusu)
+class TarayiciDuzeyiTesti(BoruTabani):
+    HEDEFLER = [
+        {"targetId": "1", "type": "service_worker", "url": "https://chatgpt.com/sw.js", "title": ""},
+        {"targetId": "2", "type": "page", "url": "https://chatgpt.com.kotu.net/c/1", "title": "Taklit"},
+        {"targetId": "3", "type": "page", "url": "https://chatgpt.com/c/abc", "title": "Sohbet"},
+        {"targetId": "4", "type": "page", "url": "https://claude.ai/new", "title": "Claude"},
+    ]
 
-class SahteDevTools(BaseHTTPRequestHandler):
-    def log_message(self, *a):
-        pass
+    def davranis(self, istek, s):
+        y = istek["method"]
+        if y == "Target.getTargets":
+            return [{"id": istek["id"], "result": {"targetInfos": self.HEDEFLER}}]
+        if y == "Target.attachToTarget":
+            return [{"id": istek["id"], "result": {"sessionId": "S-" + istek["params"]["targetId"]}}]
+        if y == "Target.createTarget":
+            return [{"id": istek["id"], "result": {"targetId": "YENI"}}]
+        if y == "Browser.getWindowForTarget":
+            return [{"id": istek["id"], "result": {"windowId": 5, "bounds": {"left": 1, "windowState": "minimized"}}}]
+        return [{"id": istek["id"], "result": {}}]
 
-    def do_GET(self):
-        port = self.server.server_port
-        if self.path == "/json/version":
-            veri = {"Browser": "Edge/1", "webSocketDebuggerUrl": f"ws://127.0.0.1:{port}/devtools/browser/B"}
-        elif self.path == "/json/list":
-            veri = [{"id": "1", "type": "service_worker", "url": "http://a/sw.js", "title": "", "webSocketDebuggerUrl": "ws://x/1"},
-                    {"id": "2", "type": "page", "url": "http://a/sohbet", "title": "Sohbet", "webSocketDebuggerUrl": "ws://x/2"},
-                    {"id": "3", "type": "page", "url": "http://a/sohbet2", "title": "Diğer", "webSocketDebuggerUrl": "ws://x/3"}]
-        else:
-            self.send_response(404)
-            self.end_headers()
-            return
-        govde = json.dumps(veri).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(govde)))
-        self.end_headers()
-        self.wfile.write(govde)
+    def test_pencere_bul_alan_adi_siniri(self):
+        s = self.kur(self.davranis)
+        self.assertEqual(cdp.pencere_bul(s.boru, "chatgpt.com")["id"], "3")  # service_worker ve taklit alan adı değil
+        self.assertEqual(cdp.pencere_bul(s.boru, "claude.ai")["url"], "https://claude.ai/new")
+        self.assertIsNone(cdp.pencere_bul(s.boru, "gemini.google.com"))
 
+    def test_yeni_pencere_ve_pencere_sinirlari(self):
+        s = self.kur(self.davranis)
+        self.assertEqual(cdp.yeni_pencere(s.boru, "https://claude.ai/"), "YENI")
+        self.assertEqual(s.gelenler[-1]["params"], {"url": "https://claude.ai/", "newWindow": True})
+        cdp.pencere_sinirlari(s.boru, "3", 10.6, 20, 640, 480)
+        sinirlar = [g["params"]["bounds"] for g in s.gelenler if g["method"] == "Browser.setWindowBounds"]
+        self.assertEqual(sinirlar, [{"windowState": "normal"},  # simge durumundan önce normale
+                                    {"left": 10, "top": 20, "width": 640, "height": 480, "windowState": "normal"}])
 
-class HttpUclariTesti(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.sunucu = ThreadingHTTPServer(("127.0.0.1", 0), SahteDevTools)
-        cls.port = cls.sunucu.server_port
-        threading.Thread(target=cls.sunucu.serve_forever, daemon=True).start()
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.sunucu.shutdown()
-        cls.sunucu.server_close()
-
-    def test_hedefler_ve_pencere_bul(self):
-        self.assertEqual(len(cdp.hedefler(self.port)), 3)
-        self.assertEqual(cdp.pencere_bul(self.port, "a/sohbet")["id"], "2")  # ilk "page" hedefi, service_worker değil
-        self.assertEqual(cdp.pencere_bul(self.port, "a/sohbet2")["id"], "3")
-        self.assertIsNone(cdp.pencere_bul(self.port, "a/yok-boyle-yol"))
-        self.assertIsNone(cdp.pencere_bul(self.port, "sohbet"))  # alt dize eşleşmesi yok
-        self.assertIsNone(cdp.pencere_bul(self.port, "b"))
-
-    def test_tarayici_ws(self):
-        self.assertEqual(cdp.tarayici_ws(self.port), f"ws://127.0.0.1:{self.port}/devtools/browser/B")
-
-    def test_tarayici_yoksa_turkce_hata(self):
-        s = socket(AF_INET, SOCK_STREAM)
-        s.bind(("127.0.0.1", 0))
-        bos = s.getsockname()[1]
-        s.close()
-        with self.assertRaises(cdp.CdpHatasi) as h:
-            cdp.hedefler(bos)
-        self.assertIn("bağlanılamadı", str(h.exception))
-        with mock.patch.object(tarayici, "CDP_PORT", bos):
-            self.assertFalse(tarayici.calisiyor_mu())
-            self.assertIsNone(tarayici.sayfa("x"))
-
-    def test_calisiyor_mu(self):
-        with mock.patch.object(tarayici, "CDP_PORT", self.port):
+    def test_tarayici_modulu_boru_uzerinden(self):
+        s = self.kur(self.davranis)
+        with mock.patch.object(tarayici, "_boru", s.boru):
             self.assertTrue(tarayici.calisiyor_mu())
+            self.assertEqual(tarayici.hedef("chatgpt.com")["id"], "3")
+            o = tarayici.sayfa("chatgpt.com")
+            self.assertIsInstance(o, cdp.Oturum)
+            self.assertEqual((o.hedef_id, o.oturum_id), ("3", "S-3"))
+            self.assertIsNone(tarayici.sayfa("gemini.google.com"))
+            self.assertIsNone(tarayici.pencere_ac("https://gemini.google.com/app"))
+            self.assertEqual(s.gelenler[-1]["method"], "Target.createTarget")
+            tarayici.pencere_sinirlari("3", 0, 0, 100, 100)
+        self.assertFalse(tarayici.calisiyor_mu())  # yama bitti: bu süreçte tarayıcı yok
+        self.assertIsNone(tarayici.sayfa("chatgpt.com"))
+        self.assertIsNone(tarayici.hedef("chatgpt.com"))
+        with self.assertRaises(cdp.CdpHatasi):
+            tarayici.pencere_sinirlari("3", 0, 0, 100, 100)
+
+    def test_kapanmis_boru_calismiyor_sayilir(self):
+        s = self.kur(self.davranis)
+        s.yazmayi_kapat()
+        with mock.patch.object(tarayici, "_boru", s.boru):
+            self.assertTrue(self._bekle(lambda: not tarayici.calisiyor_mu()))
+            self.assertIsNone(tarayici.sayfa("chatgpt.com"))
+
+    def _bekle(self, kosul, sure=2):
+        bitis = time.monotonic() + sure
+        while time.monotonic() < bitis:
+            if kosul():
+                return True
+            time.sleep(0.02)
+        return False
 
 
-class TarayiciYedekTesti(unittest.TestCase):
+class TarayiciBaslatmaTesti(unittest.TestCase):
+    """tarayici.baslat: Edge'in kendisi yerine sahte boru kullanılır."""
+
+    def setUp(self):
+        yama = mock.patch.object(tarayici, "_boru", None)
+        yama.start()
+        self.addCleanup(yama.stop)
+
     def test_edge_yoksa_varsayilan_tarayici_ve_uyari(self):
-        with mock.patch.object(tarayici, "calisiyor_mu", return_value=False), \
-                mock.patch.object(tarayici, "EDGE_YOLLARI", [r"C:\yok\msedge.exe"]), \
+        with mock.patch.object(tarayici, "EDGE_YOLLARI", [r"C:\yok\msedge.exe"]), \
                 mock.patch.object(tarayici.webbrowser, "open") as ac:
             uyari = tarayici.baslat("http://127.0.0.1:1/")
         ac.assert_called_once_with("http://127.0.0.1:1/")
         self.assertIn("Edge bulunamadı", uyari)
+
+    def baslatici(self, davranis, komutlar):
+        def boruyla_baslat(komut):
+            komutlar.append(komut)
+            s = SahteTarayici(davranis)
+            self.addCleanup(s.boru.kapat)
+            self.addCleanup(s.yazmayi_kapat)
+            self.sahte = s
+            return s.boru
+        return boruyla_baslat
+
+    def test_boruyla_baslar_port_acmaz(self):
+        komutlar = []
+        with mock.patch.object(tarayici, "_edge_yolu", return_value=r"C:\edge\msedge.exe"), \
+                mock.patch.object(tarayici.cdp, "boruyla_baslat",
+                                  self.baslatici(lambda i, s: [{"id": i["id"], "result": {"product": "Edg"}}], komutlar)):
+            self.assertIsNone(tarayici.baslat("http://127.0.0.1:8766/#t=x"))
+            self.assertTrue(tarayici.calisiyor_mu())
+        komut = komutlar[0]
+        self.assertEqual(komut[0], r"C:\edge\msedge.exe")
+        self.assertIn(f"--user-data-dir={tarayici.PROFIL}", komut)
+        self.assertEqual(komut[-1], "--app=http://127.0.0.1:8766/#t=x")
+        self.assertFalse(any(("remote-debugging-" + "port") in a or ("remote-allow-" + "origins") in a for a in komut))
+        self.assertEqual(self.sahte.gelenler[0]["method"], "Browser.getVersion")
+
+    def test_site_penceresi_uygulama_kipinde_degil(self):
+        komutlar = []
+        with mock.patch.object(tarayici, "_edge_yolu", return_value=r"C:\edge\msedge.exe"), \
+                mock.patch.object(tarayici.cdp, "boruyla_baslat",
+                                  self.baslatici(lambda i, s: [{"id": i["id"], "result": {}}], komutlar)):
+            self.assertIsNone(tarayici.pencere_ac("https://chatgpt.com/"))
+        self.assertEqual(komutlar[0][-1], "https://chatgpt.com/")
+
+    def test_profil_baska_edge_tarafindan_kullaniliyorsa_turkce_hata(self):
+        def davranis(istek, s):
+            s.yazmayi_kapat()  # süreç açılışı eski Edge'e devredip çıktı: boru EOF
+            return []
+        with mock.patch.object(tarayici, "_edge_yolu", return_value=r"C:\edge\msedge.exe"), \
+                mock.patch.object(tarayici.cdp, "boruyla_baslat", self.baslatici(davranis, [])):
+            with self.assertRaises(tarayici.TarayiciHatasi) as h:
+                tarayici.baslat("http://127.0.0.1:1/")
+            self.assertEqual(str(h.exception), tarayici.PROFIL_ACIK_MESAJI)
+            self.assertIn("açık bir Edge penceresi var", tarayici.pencere_ac("https://chatgpt.com/"))
+            self.assertIn("açık bir Edge penceresi var", tarayici.uygulama_penceresi_ac("http://127.0.0.1:1/"))
+        self.assertFalse(tarayici.calisiyor_mu())
+
+    def test_calisirken_uygulama_penceresi_devredilir(self):
+        s = SahteTarayici(lambda i, s: [{"id": i["id"], "result": {}}])
+        self.addCleanup(s.boru.kapat)
+        self.addCleanup(s.yazmayi_kapat)
+        with mock.patch.object(tarayici, "_boru", s.boru), \
+                mock.patch.object(tarayici, "_edge_yolu", return_value=r"C:\edge\msedge.exe"), \
+                mock.patch.object(tarayici.subprocess, "Popen") as popen, \
+                mock.patch.object(tarayici.cdp, "boruyla_baslat") as yeni_boru:
+            self.assertIsNone(tarayici.uygulama_penceresi_ac("http://127.0.0.1:8766/#t=x"))
+        yeni_boru.assert_not_called()  # ikinci denetim bağlantısı açılmaz
+        komut = popen.call_args.args[0]
+        self.assertEqual(komut, [r"C:\edge\msedge.exe", "--app=http://127.0.0.1:8766/#t=x",
+                                 f"--user-data-dir={tarayici.PROFIL}"])
+
+    def test_kapat_browser_close_gonderir(self):
+        s = SahteTarayici(lambda i, s: [{"id": i["id"], "result": {}}])
+        self.addCleanup(s.yazmayi_kapat)
+        tarayici._boru = s.boru
+        tarayici.kapat()
+        self.assertIsNone(tarayici._boru)
+        self.assertEqual([g["method"] for g in s.gelenler], ["Browser.close"])
+        self.assertTrue(s.eof_goruldu.wait(2))
+        tarayici.kapat()  # ikinci kez sessiz
 
 
 # ---------------------------------------------------------------- gerçek Edge ile bütünleşme
@@ -370,27 +479,65 @@ def _profil_sureclerini_kapat(profil):
     subprocess.run(["powershell", "-NoProfile", "-Command", komut], capture_output=True, timeout=60)
 
 
+def _profil_surec_kimlikleri(profil):
+    """Komut satırında profil klasörünün adı geçen süreçlerin kimlikleri."""
+    ad = Path(profil).name
+    komut = ("Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine.Contains('%s') } | "
+             "ForEach-Object { $_.ProcessId }" % ad)
+    cikti = subprocess.run(["powershell", "-NoProfile", "-Command", komut], capture_output=True, text=True, timeout=60)
+    return {int(x) for x in cikti.stdout.split() if x.strip().isdigit()}
+
+
+def _dinlenen_portlar(kimlikler):
+    """Verilen süreçlerin TCP LISTENING portları (netstat -ano)."""
+    cikti = subprocess.run(["netstat", "-ano", "-p", "TCP"], capture_output=True, text=True, timeout=60).stdout
+    portlar = []
+    for satir in cikti.splitlines():
+        p = satir.split()
+        if len(p) >= 5 and p[3].upper() == "LISTENING" and p[4].isdigit() and int(p[4]) in kimlikler:
+            portlar.append(p[1])
+    return portlar
+
+
 @unittest.skipUnless(_edge_var_mi(), "Microsoft Edge bulunamadı, bütünleşme testi atlandı")
 class EdgeButunlesmeTesti(unittest.TestCase):
-    def test_baslat_ve_degerlendir(self):
+    def test_boruyla_baslat_degerlendir_ve_port_yok(self):
         profil = tempfile.mkdtemp(prefix="yzcdp_")
         self.addCleanup(shutil.rmtree, profil, True)
         self.addCleanup(_profil_sureclerini_kapat, profil)
-        with mock.patch.object(tarayici, "PROFIL", Path(profil)), mock.patch.object(tarayici, "CDP_PORT", 9231):
-            self.assertIsNone(tarayici.baslat("about:blank"))
+        self.addCleanup(tarayici.kapat)
+        with mock.patch.object(tarayici, "PROFIL", Path(profil)), mock.patch.object(tarayici, "_boru", None):
+            self.assertIsNone(tarayici.baslat("about:blank", uygulama=False))
             self.assertTrue(tarayici.calisiyor_mu())
-            # Edge, --app=about:blank adresini yeni sekmeye çevirir; ikinci pencereyi CDP ile açmak
-            # hem pencere_ac yolunu sınar hem de adresi gerçekten about:blank olan bir sekme verir.
-            self.assertIsNone(tarayici.pencere_ac("about:blank"))
-            # about:blank http(s) değil; adres eşleştirmesi onu kabul etmez, hedef doğrudan CDP listesinden alınır.
+            b = tarayici.baglanti()
+            self.assertIn("Edg", b.komut("Browser.getVersion")["product"])
+            # Yeni pencere boru üzerinden açılır; about:blank http(s) olmadığından adres eşleştirmesiyle bulunmaz,
+            # hedef doğrudan Target.getTargets listesinden alınır.
+            hedef_id = cdp.yeni_pencere(b, "about:blank")
             self.assertIsNone(tarayici.sayfa("about:blank"))
-            hedef = next(h for h in cdp.hedefler(9231) if h.get("type") == "page" and h.get("url") == "about:blank")
-            sayfa = cdp.Baglanti(hedef["webSocketDebuggerUrl"])
-            self.assertIsNotNone(sayfa)
-            try:
+            with cdp.sekmeye_baglan(b, hedef_id) as sayfa:
                 self.assertEqual(sayfa.degerlendir("1+41"), 42)
+            self.assertNotIn(sayfa.oturum_id, b.oturumlar)  # kapatınca oturumdan ayrıldı
+            sinir = tarayici.pencere_sinirlari(hedef_id, 50, 60, 700, 500)
+            for gercek, beklenen in zip((sinir["left"], sinir["top"], sinir["width"], sinir["height"]), (50, 60, 700, 500)):
+                self.assertAlmostEqual(gercek, beklenen, delta=2, msg=str(sinir))  # DPI ölçeğinde yuvarlama
+            # Hiçbir Edge süreci TCP portu dinlemiyor (CDP yalnızca boruda).
+            kimlikler = _profil_surec_kimlikleri(profil)
+            self.assertIn(b.surec.pid, kimlikler)
+            self.assertEqual(_dinlenen_portlar(kimlikler), [])
+            # Aynı profille ikinci bir boru örneği açılışı eskisine devreder: Türkçe hata.
+            ilk = tarayici._boru
+            tarayici._boru = None
+            try:
+                with self.assertRaises(tarayici.TarayiciHatasi) as h:
+                    tarayici.baslat("about:blank", uygulama=False)
+                self.assertEqual(str(h.exception), tarayici.PROFIL_ACIK_MESAJI)
             finally:
-                sayfa.kapat()
+                tarayici._boru = ilk
+            self.assertTrue(tarayici.calisiyor_mu(), "ilk tarayıcının borusu etkilenmemeli")
+            surec = b.surec
+            tarayici.kapat()
+            self.assertEqual(surec.wait(15), 0, "Browser.close ile Edge kapanmalı")
 
 
 if __name__ == "__main__":

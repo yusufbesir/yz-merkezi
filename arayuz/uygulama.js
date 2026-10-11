@@ -17,11 +17,29 @@ const pencereAlani = $("#pencereler");
 const mesajKutusu = $("#mesaj");
 const sistemKutusu = $("#sistem");
 
+// ------------------------------------------------------------ istek belirteci
+// Sunucu belirteci adresin parçasında (#t=...) verir: sunucuya gitmez, burada sessionStorage'a alınır ve
+// adresten silinir. Her /api/ isteği X-YZ-Token başlığıyla gider; belirteçsiz istekler 403 alır.
+const BELIRTEC_ANAHTARI = "yzm.belirtec";
+let bellekBelirteci = "";
+(function belirteciAl() {
+  const m = /[#&]t=([A-Za-z0-9_-]+)/.exec(location.hash);
+  if (m) {
+    bellekBelirteci = m[1];
+    try { sessionStorage.setItem(BELIRTEC_ANAHTARI, m[1]); } catch (_) { /* saklanamazsa bellekte kalır */ }
+    history.replaceState(null, "", location.pathname + location.search);
+  }
+})();
+function belirtec() {
+  if (bellekBelirteci) return bellekBelirteci;
+  try { return sessionStorage.getItem(BELIRTEC_ANAHTARI) || ""; } catch (_) { return ""; }
+}
+
 // ------------------------------------------------------------ yardımcılar
 
 async function api(yol, govde) {
-  const secenek = govde === undefined ? {} : {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(govde),
+  const secenek = govde === undefined ? { headers: { "X-YZ-Token": belirtec() } } : {
+    method: "POST", headers: { "X-YZ-Token": belirtec(), "Content-Type": "application/json" }, body: JSON.stringify(govde),
   };
   const yanit = await fetch(yol, secenek);
   const veri = await yanit.json().catch(() => ({}));
@@ -38,24 +56,48 @@ function bildir(metin, sure = 4000) {
   bildirimZamani = setTimeout(() => { kutu.hidden = true; }, sure);
 }
 
-function kacis(metin) {
-  return metin.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+function olustur(etiket, sinif, metin) {
+  const e = document.createElement(etiket);
+  if (sinif) e.className = sinif;
+  if (metin !== undefined) e.textContent = metin;
+  return e;
 }
 
-// Küçük bir Markdown çevirici: kod blokları, satır içi kod, kalın yazı, başlıklar.
-function md(metin) {
-  return metin.split("```").map((parca, i) => {
+// Satır içi işaretler: `kod` ve **kalın**. Her şey metin düğümü olarak eklenir (HTML çözümlenmez).
+function satirIci(kok, metin) {
+  const kalip = /`([^`\n]+)`|\*\*([^*\n]+)\*\*/g;
+  let son = 0, e;
+  while ((e = kalip.exec(metin))) {
+    if (e.index > son) kok.append(metin.slice(son, e.index));
+    kok.append(olustur(e[1] !== undefined ? "code" : "strong", "", e[1] !== undefined ? e[1] : e[2]));
+    son = kalip.lastIndex;
+  }
+  if (son < metin.length) kok.append(metin.slice(son));
+}
+
+// Küçük bir Markdown çevirici (DOM döndürür): kod blokları, satır içi kod, kalın yazı, başlıklar.
+function mdDom(metin) {
+  const parca = document.createDocumentFragment();
+  metin.split("```").forEach((bolum, i) => {
     if (i % 2 === 1) {
-      const satirSonu = parca.indexOf("\n");
-      const kod = satirSonu >= 0 ? parca.slice(satirSonu + 1) : parca;
-      return `<pre><code>${kacis(kod.replace(/\n$/, ""))}</code></pre>`;
+      const satirSonu = bolum.indexOf("\n");
+      const kod = satirSonu >= 0 ? bolum.slice(satirSonu + 1) : bolum;
+      const pre = olustur("pre");
+      pre.append(olustur("code", "", kod.replace(/\n$/, "")));
+      parca.append(pre);
+      return;
     }
-    return kacis(parca)
-      .replace(/`([^`\n]+)`/g, "<code>$1</code>")
-      .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
-      .replace(/^#{1,6} (.*)$/gm, '<strong class="baslik">$1</strong>')
-      .replace(/\n/g, "<br>");
-  }).join("");
+    bolum.split("\n").forEach((satir, n) => {
+      if (n) parca.append(document.createElement("br"));
+      const baslik = /^#{1,6} (.*)$/.exec(satir);
+      if (baslik) {
+        const b = olustur("strong", "baslik");
+        satirIci(b, baslik[1]);
+        parca.append(b);
+      } else satirIci(parca, satir);
+    });
+  });
+  return parca;
 }
 
 function saglayici(id) {
@@ -93,7 +135,8 @@ function modelleriGetir(id, yenile = false) {
 function saglayiciSeciminiCiz(p) {
   const secim = $(".saglayici", p.el);
   const gruplar = { hazir: "Bulut sağlayıcıları", yerel: "Bu bilgisayardaki modeller", ozel: "Eklediğim sağlayıcılar" };
-  secim.innerHTML = '<option value="">Sağlayıcı seçin…</option>';
+  secim.innerHTML = "";
+  secim.append(new Option("Sağlayıcı seçin…", ""));
   for (const [kaynak, baslik] of Object.entries(gruplar)) {
     const uyeler = durum.saglayicilar.filter((s) => s.kaynak === kaynak);
     if (!uyeler.length) continue;
@@ -228,7 +271,7 @@ function balonOlustur(m) {
 
 function balonDoldur(balon, m) {
   const govde = $(".govde", balon);
-  govde.innerHTML = m.icerik ? md(m.icerik) : (m.hata ? kacis(m.hata) : "");
+  govde.replaceChildren(m.icerik ? mdDom(m.icerik) : (m.hata || ""));
   govde.classList.toggle("yaziyor", Boolean(m.yaziyor));
   $(".ek", balon)?.remove();
   if (m.rol !== "asistan" || m.yaziyor) return;
@@ -259,7 +302,7 @@ function mesajlariCiz(p) {
   const alan = $(".mesajlar", p.el);
   alan.innerHTML = "";
   if (!p.gecmis.length) {
-    alan.innerHTML = '<div class="bos">Bir sağlayıcı ve model seçin, sonra alttaki kutuya mesajınızı yazın.</div>';
+    alan.append(olustur("div", "bos", "Bir sağlayıcı ve model seçin, sonra alttaki kutuya mesajınızı yazın."));
     return;
   }
   for (const m of p.gecmis) alan.append(balonOlustur(m));
@@ -296,7 +339,7 @@ async function pencereyeGonder(p, metin, sistem) {
   try {
     const yanit = await fetch("/api/sohbet", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "X-YZ-Token": belirtec(), "Content-Type": "application/json" },
       body: JSON.stringify({ saglayici: p.saglayici, model: p.model, mesajlar, sistem }),
       signal: p.denetleyici.signal,
     });
@@ -368,11 +411,21 @@ function ayarlariCiz() {
     satir.className = "anahtar-satiri";
     const rozet = s.anahtar_kaynagi === "dosya" ? "Kayıtlı"
       : s.anahtar_kaynagi === "ortam" ? `Ortam değişkeni (${s.anahtar_ortam})` : "Anahtar yok";
-    satir.innerHTML = `
-      <div class="ad">${kacis(s.ad)}<small>${s.nereden ? `<a href="${kacis(s.nereden)}" target="_blank" rel="noopener">Anahtar al</a>` : kacis(s.adres)}</small></div>
-      <input type="password" autocomplete="off" placeholder="${s.anahtar_kaynagi ? "Değiştirmek için yeni anahtar yazın" : "API anahtarını yapıştırın"}">
-      <span class="rozet ${s.anahtar_kaynagi ? "var" : ""}">${kacis(rozet)}</span>
-      <span><button class="birincil kaydet">Kaydet</button> ${s.anahtar_kaynagi === "dosya" ? '<button class="sil">Sil</button>' : ""}</span>`;
+    const ad = olustur("div", "ad", s.ad);
+    const kucuk = olustur("small");
+    if (s.nereden && /^https?:\/\//.test(s.nereden)) {
+      const bag = olustur("a", "", "Anahtar al");
+      bag.href = s.nereden; bag.target = "_blank"; bag.rel = "noopener";
+      kucuk.append(bag);
+    } else kucuk.append(s.adres);
+    ad.append(kucuk);
+    const girdi0 = olustur("input");
+    girdi0.type = "password"; girdi0.autocomplete = "off";
+    girdi0.placeholder = s.anahtar_kaynagi ? "Değiştirmek için yeni anahtar yazın" : "API anahtarını yapıştırın";
+    const dugmeler = olustur("span");
+    dugmeler.append(olustur("button", "birincil kaydet", "Kaydet"));
+    if (s.anahtar_kaynagi === "dosya") dugmeler.append(" ", olustur("button", "sil", "Sil"));
+    satir.append(ad, girdi0, olustur("span", `rozet ${s.anahtar_kaynagi ? "var" : ""}`, rozet), dugmeler);
     const girdi = $("input", satir);
     $(".kaydet", satir).addEventListener("click", () => anahtarKaydet(s, girdi.value));
     girdi.addEventListener("keydown", (e) => { if (e.key === "Enter") anahtarKaydet(s, girdi.value); });
@@ -387,7 +440,9 @@ function ayarlariCiz() {
   for (const s of durum.saglayicilar.filter((x) => x.kaynak === "ozel")) {
     const satir = document.createElement("div");
     satir.className = "ozel-satir";
-    satir.innerHTML = `<span>${kacis(s.ad)} <small>${kacis(s.adres)} · ${kacis(s.tur)}</small></span><button>Kaldır</button>`;
+    const etiket = olustur("span", "", `${s.ad} `);
+    etiket.append(olustur("small", "", `${s.adres} · ${s.tur}`));
+    satir.append(etiket, olustur("button", "", "Kaldır"));
     $("button", satir).addEventListener("click", async () => {
       if (!confirm(`${s.ad} sağlayıcısı kaldırılsın mı?`)) return;
       await api("/api/saglayici-sil", { id: s.id });

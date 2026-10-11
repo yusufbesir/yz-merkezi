@@ -16,10 +16,30 @@ const YANIT_SURESI = 180000;   // ms: bir yanıt için en çok bu kadar beklenir
 const YANIT_ARALIGI = 2000;    // ms: yanıt yoklama aralığı
 const bekle = (ms) => new Promise((coz) => setTimeout(coz, ms));
 
+// ---------------------------------------------------------------- istek belirteci
+// Sunucu belirteci adresin parçasında (#t=...) verir: sunucuya gitmez, burada sessionStorage'a alınır ve
+// adresten silinir. Her /api/ isteği X-YZ-Token başlığıyla gider; belirteçsiz istekler 403 alır.
+const BELIRTEC_ANAHTARI = "yzm.belirtec";
+let bellekBelirteci = "";
+(function belirteciAl() {
+  const m = /[#&]t=([A-Za-z0-9_-]+)/.exec(location.hash);
+  if (m) {
+    bellekBelirteci = m[1];
+    try { sessionStorage.setItem(BELIRTEC_ANAHTARI, m[1]); } catch (_) { /* saklanamazsa bellekte kalır */ }
+    history.replaceState(null, "", location.pathname + location.search);
+  }
+})();
+function belirtec() {
+  if (bellekBelirteci) return bellekBelirteci;
+  try { return sessionStorage.getItem(BELIRTEC_ANAHTARI) || ""; } catch (_) { return ""; }
+}
+
 // ---------------------------------------------------------------- yardımcılar
 
 async function api(yol, govde) {
-  const secenek = govde === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(govde) };
+  const basliklar = { "X-YZ-Token": belirtec() };
+  const secenek = govde === undefined ? { headers: basliklar }
+    : { method: "POST", headers: { ...basliklar, "Content-Type": "application/json" }, body: JSON.stringify(govde) };
   const yanit = await fetch(yol, secenek);
   const veri = await yanit.json().catch(() => ({}));
   if (!yanit.ok || veri.hata) throw new Error(veri.hata || `Sunucu hatası (${yanit.status})`);
@@ -88,6 +108,7 @@ async function yenile() {
   const v = await api("/api/durum");
   const onceki = new Map(durum.siteler.map((s) => [s.id, s.giris]));
   Object.assign(durum, { programlar: v.programlar, siteler: v.siteler || [], ayarlar: v.ayarlar, sohbetler: v.sohbetler });
+  if (v.uyari && v.uyari !== durum.gosterilenUyari) { durum.gosterilenUyari = v.uyari; bildir(v.uyari, 15000); }
   temayiUygula(); selamla();
   kenarProgramlariCiz(); hedefMenuCiz(); sohbetListesiCiz(); programAyarlariCiz(); ayarlariDoldur(); girisSeridiCiz();
   // bir sitede yeni giriş yapıldıysa sohbetleri hemen oku
@@ -403,9 +424,31 @@ async function diz() {
   } catch (h) { durumSatiri(h.message, true); }
 }
 
+// Çoklu hedef onayı: birden fazla hedef seçiliyken ilk gönderimde "Şu hesaplara gidecek" sorulur; onaylanınca
+// localStorage'a "onaylandi" yazılır ve bir daha sorulmaz. Ayarlar → Genel'deki anahtar kapatılırsa hiç sorulmaz,
+// yeniden açılırsa onay sıfırlanır.
+const ONAY_ANAHTARI = "yzm.cokluHedefOnayi";   // "onaylandi" | (yok)
+const ONAY_ISTE_ANAHTARI = "yzm.cokluHedefOnayIste";   // "hayir" | (yok = iste)
+function yerelOku(anahtar) { try { return localStorage.getItem(anahtar); } catch (_) { return null; } }
+function yerelYaz(anahtar, deger) {
+  try { if (deger === null) localStorage.removeItem(anahtar); else localStorage.setItem(anahtar, deger); } catch (_) { /* saklanamazsa her seferinde sorulur */ }
+}
+const onayIsteniyor = () => yerelOku(ONAY_ISTE_ANAHTARI) !== "hayir";
+
+function cokluHedefOnaylandiMi() {
+  const secili = hedefler().filter((h) => h.secili);
+  if (secili.length < 2 || !onayIsteniyor() || yerelOku(ONAY_ANAHTARI) === "onaylandi") return true;
+  if (!confirm(`Şu hesaplara gidecek: ${secili.map((h) => h.ad).join(", ")}.
+
+Mesaj bunların hepsine aynı anda gönderilsin mi? (Bir kez onaylayınca bir daha sorulmaz.)`)) return false;
+  yerelYaz(ONAY_ANAHTARI, "onaylandi");
+  return true;
+}
+
 async function gonder() {
   const metin = mesajKutusu.value.trim();
   if (!metin || durum.gonderiliyor) return;
+  if (!cokluHedefOnaylandiMi()) { durumSatiri("Gönderme iptal edildi.", false); return; }
   durum.gonderiliyor = true;
   $("#gonder").disabled = true;
   const siteModu = Boolean(durum.siteSohbet);
@@ -535,6 +578,7 @@ function ayarlariDoldur() {
   $("#ayarAd").value = a.ad || "";
   $("#ayarEnter").checked = Boolean(a.enter_bas);
   $("#ayarTemizle").checked = Boolean(a.kutuyu_temizle);
+  $("#ayarCokluOnay").checked = onayIsteniyor();
   $("#ayarYerlesim").value = a.yerlesim || "sol";
   $$("#ayarTema button").forEach((b) => b.classList.toggle("aktif", b.dataset.deger === (a.tema || "sistem")));
   $$("#ayarYazi button").forEach((b) => b.classList.toggle("aktif", b.dataset.deger === (a.yazi_boyutu || "orta")));
@@ -591,6 +635,9 @@ function sekmeSec(ad) {
   $$(".ayarlar-icerik section").forEach((s) => { s.hidden = s.dataset.sekme !== ad; });
 }
 
+// Tarayıcılar program olarak eklenemez (sunucu da reddeder): ChatGPT, Gemini ve Claude web hesabı olarak zaten var.
+const TARAYICI_EXE = /^(msedge|chrome|firefox|brave|opera)\.exe$/i;
+
 async function programEkleAc() {
   try {
     const { pencereler } = await api("/api/pencereler");
@@ -600,8 +647,10 @@ async function programEkleAc() {
     secim.pencereler = pencereler;
     secim.onchange = () => {
       const p = pencereler[secim.value];
-      const tarayici = /msedge|chrome|firefox|brave|opera/i.test(p.exe);
-      $("#baslikAlani").hidden = !tarayici;
+      const tarayici = TARAYICI_EXE.test(p.exe);
+      $("#baslikAlani").hidden = true;
+      $("#tarayiciUyari").hidden = !tarayici;
+      $("#programEkleTamam").disabled = tarayici;
       $("#yeniAd").value = p.baslik.replace(/ [-–—] .*$/, "").slice(0, 30);
       $("#yeniBaslik").value = $("#yeniAd").value;
     };
@@ -662,6 +711,10 @@ $("#ayarAd").addEventListener("change", (e) => ayarKaydet({ ad: e.target.value.t
 $("#ayarEnter").addEventListener("change", (e) => ayarKaydet({ enter_bas: e.target.checked }));
 $("#ayarTemizle").addEventListener("change", (e) => ayarKaydet({ kutuyu_temizle: e.target.checked }));
 $("#ayarYerlesim").addEventListener("change", (e) => ayarKaydet({ yerlesim: e.target.value }));
+$("#ayarCokluOnay").addEventListener("change", (e) => {
+  yerelYaz(ONAY_ISTE_ANAHTARI, e.target.checked ? null : "hayir");
+  if (e.target.checked) yerelYaz(ONAY_ANAHTARI, null);  // yeniden açılınca bir sonraki çoklu gönderimde tekrar sorulur
+});
 $$("#ayarTema button").forEach((b) => b.addEventListener("click", () => ayarKaydet({ tema: b.dataset.deger })));
 $$("#ayarYazi button").forEach((b) => b.addEventListener("click", () => ayarKaydet({ yazi_boyutu: b.dataset.deger })));
 
@@ -671,8 +724,8 @@ $("#programEkleTamam").addEventListener("click", async () => {
   const p = secim.pencereler[secim.value];
   const ad = $("#yeniAd").value.trim();
   if (!p || !ad) return bildir("Ad gerekli.");
+  if (TARAYICI_EXE.test(p.exe)) return bildir("Tarayıcılar program olarak eklenemez.");
   const govde = { ad, exe: p.exe, yol: p.yol };
-  if (!$("#baslikAlani").hidden) govde.baslik_icerir = $("#yeniBaslik").value.trim() || ad;
   try {
     await api("/api/program-ekle", govde);
     $("#programEkle").close();

@@ -18,10 +18,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
+import guvenlik
+
 KOK = Path(__file__).resolve().parent
 ARAYUZ = KOK / "arayuz"
 KAYIT_DOSYASI = KOK / "saglayicilar.json"
-AYAR_DOSYASI = Path(os.environ.get("YZ_AYAR_DOSYASI", KOK / "ayarlar.json"))
+AYAR_DOSYASI = guvenlik.veri_yolu("YZ_AYAR_DOSYASI", "ayarlar.json")  # varsayılan: %LOCALAPPDATA%\YZMerkezi
+ESKI_AYAR_DOSYASI = KOK / "ayarlar.json"  # eski sürümlerin yeri (ilk açılışta taşınır)
 PORT = int(os.environ.get("YZ_PORT", "8765"))
 EN_FAZLA_TOKEN = 8192
 
@@ -43,6 +46,8 @@ OPENAI_SOHBET_DISI = re.compile(
 
 AYAR_KILIDI = threading.Lock()
 bulunan_yereller = {}
+# İstek belirteci: açılışta bir kez üretilir, yalnızca bellekte durur; arayüz adreste (#t=) alır.
+BELIRTEC = guvenlik.yeni_belirtec()
 
 
 class SaglayiciHatasi(Exception):
@@ -52,16 +57,15 @@ class SaglayiciHatasi(Exception):
 # ---------------------------------------------------------------- ayarlar
 
 def ayarlari_oku():
-    try:
-        return json.loads(AYAR_DOSYASI.read_text("utf-8"))
-    except (OSError, ValueError):
-        return {}
+    """Ayar dosyasını okur. Bozuksa (JSON değilse) silinmez: `<ad>.bozuk-<zaman>.json` olarak saklanır."""
+    veri, uyari = guvenlik.json_oku(AYAR_DOSYASI)
+    if uyari:
+        print(uyari)
+    return veri
 
 
 def ayarlari_yaz(ayar):
-    gecici = AYAR_DOSYASI.with_suffix(".tmp")
-    gecici.write_text(json.dumps(ayar, ensure_ascii=False, indent=2), "utf-8")
-    os.replace(gecici, AYAR_DOSYASI)
+    guvenlik.json_yaz(AYAR_DOSYASI, ayar)
 
 
 def tum_saglayicilar():
@@ -309,11 +313,23 @@ ICERIK_TURLERI = {".html": "text/html; charset=utf-8", ".css": "text/css; charse
                   ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml", ".ico": "image/x-icon"}
 
 
-class Isleyici(BaseHTTPRequestHandler):
-    server_version = "YapayZekaMerkezi/1.0"
-
+class Isleyici(guvenlik.GuvenlikKarisimi, BaseHTTPRequestHandler):
     def log_message(self, bicim, *args):
         pass
+
+    def _beklenen_belirtec(self):
+        return BELIRTEC
+
+    def _api_izni_yok(self, yol, govde_var=False):
+        """/api/* isteği belirteçsiz ya da yanlış belirteçliyse 403 yanıtlar (True döner). /api/kimlik hariç."""
+        if not yol.startswith("/api/") or yol == "/api/kimlik":
+            return False
+        if self._belirtec_dogru_mu():
+            return False
+        if govde_var:
+            self._govdeyi_at()
+        self._json({"hata": "Oturum belirteci eksik ya da geçersiz. Uygulamayı baslat-api.bat ile yeniden açın."}, 403)
+        return True
 
     def _guvenli_mi(self):
         # Başka sitelerin tarayıcı üzerinden bu sunucuya istek atmasını engeller.
@@ -332,19 +348,14 @@ class Isleyici(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(govde)
 
-    def _govde(self):
-        uzunluk = int(self.headers.get("Content-Length") or 0)
-        if not uzunluk:
-            return {}
-        try:
-            return json.loads(self.rfile.read(uzunluk).decode("utf-8"))
-        except ValueError:
-            return {}
-
     def do_GET(self):
         if not self._guvenli_mi():
             return self._json({"hata": "İzin verilmeyen istek."}, 403)
         yol = urlparse(self.path)
+        if self._api_izni_yok(yol.path):
+            return
+        if yol.path == "/api/kimlik":
+            return self._json(guvenlik.KIMLIK)
         if yol.path == "/api/saglayicilar":
             return self._json(saglayici_listesi())
         if yol.path == "/api/modeller":
@@ -360,18 +371,28 @@ class Isleyici(BaseHTTPRequestHandler):
 
     def do_POST(self):
         if not self._guvenli_mi():
+            self._govdeyi_at()
             return self._json({"hata": "İzin verilmeyen istek."}, 403)
         yol = urlparse(self.path).path
-        if yol == "/api/sohbet":
-            return self._sohbet(self._govde())
-        if yol == "/api/tara":
-            return self._json({"bulunanlar": yerelleri_tara()})
-        if yol == "/api/anahtar":
-            return self._anahtar(self._govde())
-        if yol == "/api/saglayici-ekle":
-            return self._saglayici_ekle(self._govde())
-        if yol == "/api/saglayici-sil":
-            return self._saglayici_sil(self._govde())
+        if self._api_izni_yok(yol, govde_var=True):
+            return
+        try:
+            g = self._govde()
+        except guvenlik.IstekHatasi as h:
+            return self._json({"hata": h.mesaj}, h.kod)
+        try:
+            if yol == "/api/sohbet":
+                return self._sohbet(g)
+            if yol == "/api/tara":
+                return self._json({"bulunanlar": yerelleri_tara()})
+            if yol == "/api/anahtar":
+                return self._anahtar(g)
+            if yol == "/api/saglayici-ekle":
+                return self._saglayici_ekle(g)
+            if yol == "/api/saglayici-sil":
+                return self._saglayici_sil(g)
+        except Exception as h:  # noqa: BLE001
+            return self._json({"hata": guvenlik.beklenmeyen_hata(yol, h)}, 500)
         return self._json({"hata": "Bilinmeyen adres."}, 404)
 
     def _dosya(self, yol):
@@ -413,7 +434,7 @@ class Isleyici(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass  # Kullanıcı "Durdur"a bastı; tarayıcı bağlantıyı kapattı.
         except Exception as h:  # noqa: BLE001 - her hata kullanıcıya Türkçe iletilmeli
-            mesaj = str(h) if isinstance(h, SaglayiciHatasi) else f"Beklenmeyen hata: {h}"
+            mesaj = str(h) if isinstance(h, SaglayiciHatasi) else guvenlik.beklenmeyen_hata("/api/sohbet", h)
             try:
                 yaz({"hata": mesaj})
             except OSError:
@@ -466,21 +487,34 @@ class Isleyici(BaseHTTPRequestHandler):
         return self._json({"tamam": True})
 
 
+class Sunucu(ThreadingHTTPServer):
+    # Windows'ta SO_REUSEADDR, aynı porta ikinci bir dinleyicinin bağlanmasına izin verir (port gaspı):
+    # kapatıyoruz, böylece port meşgulse bağlanma hata verir.
+    allow_reuse_address = False
+    daemon_threads = True
+
+
 def main():
+    global AYAR_DOSYASI
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     try:
-        sunucu = ThreadingHTTPServer(("127.0.0.1", PORT), Isleyici)
+        sunucu = Sunucu(("127.0.0.1", PORT), Isleyici)
     except OSError:
         print(f"{PORT} numaralı port kullanımda. Uygulama zaten açık olabilir: http://127.0.0.1:{PORT}")
         sys.exit(1)
-    sunucu.daemon_threads = True
+    if not os.environ.get("YZ_AYAR_DOSYASI"):  # proje klasöründeki eski ayarlar.json bir kez veri klasörüne taşınır
+        AYAR_DOSYASI = guvenlik.eski_veriyi_tasi(ESKI_AYAR_DOSYASI, AYAR_DOSYASI)
     threading.Thread(target=yerelleri_tara, daemon=True).start()
     adres = f"http://127.0.0.1:{PORT}"
+    # Belirteç adresin parçasında (#t=) gider; parça sunucuya gönderilmez, arayüz okuyup adresten siler.
+    belirtecli = f"{adres}/#t={BELIRTEC}"
     print(f"Yapay Zeka Merkezi çalışıyor: {adres}")
     print("Kapatmak için bu pencerede Ctrl+C tuşlarına basın.")
     if "--tarayici-acma" not in sys.argv:
-        webbrowser.open(adres)
+        webbrowser.open(belirtecli)
+    else:
+        print(f"Tarayıcıda şu adresi aç (oturum belirteci içerir, kimseyle paylaşma): {belirtecli}")
     try:
         sunucu.serve_forever()
     except KeyboardInterrupt:

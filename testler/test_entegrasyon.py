@@ -8,7 +8,6 @@ uygulama sunucusunun `/test/sahte-site.html` sayfasına yönlendirilir (YZ_TEST=
 import json
 import os
 import shutil
-import socket
 import sys
 import tempfile
 import threading
@@ -23,20 +22,13 @@ from unittest import mock
 KOK = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(KOK))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import cdp  # noqa: E402
+import _ortam  # noqa: E402,F401  (gerçek ayar dosyalarını korur; sunucu modülünden önce)
 import masaustu_sunucu as ms  # noqa: E402
 import pencereler as pc  # noqa: E402
 import siteler  # noqa: E402
 import tarayici  # noqa: E402
-from test_cdp import _edge_var_mi, _profil_sureclerini_kapat  # noqa: E402
-
-
-def _bos_port():
-    s = socket.socket()
-    s.bind(("127.0.0.1", 0))
-    port = s.getsockname()[1]
-    s.close()
-    return port
+from test_cdp import (_dinlenen_portlar, _edge_var_mi, _profil_surec_kimlikleri,  # noqa: E402
+                      _profil_sureclerini_kapat)
 
 
 @unittest.skipUnless(_edge_var_mi(), "Microsoft Edge bulunamadı, site entegrasyon testi atlandı")
@@ -45,7 +37,6 @@ class SiteEntegrasyonTesti(unittest.TestCase):
     def setUpClass(cls):
         cls.klasor = tempfile.mkdtemp(prefix="yzent_")
         cls.profil = Path(cls.klasor) / "profil"
-        cdp_portu = _bos_port()
         cls.yamalar = []
 
         def yama(nesne, ad, deger):
@@ -55,11 +46,11 @@ class SiteEntegrasyonTesti(unittest.TestCase):
 
         # Ortam değişkenleri ayrı süreçler için; modüller bunları içe aktarılırken okuduğundan öznitelikler de yamalanır.
         cls.eski_ortam = {k: os.environ.get(k) for k in
-                          ("YZ_TEST", "YZ_TARAYICI_PROFILI", "YZ_CDP_PORT", "YZ_MASAUSTU_AYAR", "YZ_MASAUSTU_PORT")}
-        os.environ.update({"YZ_TEST": "1", "YZ_TARAYICI_PROFILI": str(cls.profil), "YZ_CDP_PORT": str(cdp_portu),
+                          ("YZ_TEST", "YZ_TARAYICI_PROFILI", "YZ_MASAUSTU_AYAR", "YZ_MASAUSTU_PORT")}
+        os.environ.update({"YZ_TEST": "1", "YZ_TARAYICI_PROFILI": str(cls.profil),
                            "YZ_MASAUSTU_AYAR": str(Path(cls.klasor) / "ayar.json")})
         yama(tarayici, "PROFIL", cls.profil)
-        yama(tarayici, "CDP_PORT", cdp_portu)
+        yama(tarayici, "_boru", None)  # bu sınıfın kendi (boruyla başlatılan) Edge'i
         yama(ms, "AYAR_DOSYASI", Path(cls.klasor) / "ayar.json")
         yama(ms, "kendi_pencere", lambda: None)  # kullanıcının gerçek "Yapay Zeka Merkezi" penceresine dokunma
         ms.is_kilidi = threading.Lock()
@@ -83,6 +74,7 @@ class SiteEntegrasyonTesti(unittest.TestCase):
     def tearDownClass(cls):
         cls.sunucu.shutdown()
         cls.sunucu.server_close()
+        tarayici.kapat()  # Browser.close + boru kapanır
         siteler.SITELER["chatgpt"].update(cls.eski_kayit)
         for p in reversed(cls.yamalar):
             p.stop()
@@ -98,13 +90,15 @@ class SiteEntegrasyonTesti(unittest.TestCase):
 
     @classmethod
     def post(cls, yol, veri):
-        talep = urllib.request.Request(cls.kok + yol, json.dumps(veri).encode(), {"Content-Type": "application/json"})
+        talep = urllib.request.Request(cls.kok + yol, json.dumps(veri).encode(),
+                                       {"Content-Type": "application/json", "X-YZ-Token": ms.BELIRTEC})
         with urllib.request.urlopen(talep, timeout=60) as y:
             return json.load(y)
 
     @classmethod
     def get(cls, yol):
-        with urllib.request.urlopen(cls.kok + yol, timeout=60) as y:
+        with urllib.request.urlopen(urllib.request.Request(cls.kok + yol, headers={"X-YZ-Token": ms.BELIRTEC}),
+                                    timeout=60) as y:
             return json.load(y)
 
     def chatgpt_durumu(self):
@@ -145,6 +139,13 @@ class SiteEntegrasyonTesti(unittest.TestCase):
         # ikinci çağrı: pencere zaten açık, öne getirilir
         self.assertTrue(self.post("/api/site-ac", {"id": "chatgpt"})["zaten_acik"])
 
+    def test_02b_dinlenen_port_yok(self):
+        # CDP yalnızca boruda: bu profille çalışan hiçbir Edge süreci TCP portu dinlemez.
+        self.assertTrue(tarayici.calisiyor_mu())
+        kimlikler = _profil_surec_kimlikleri(self.profil)
+        self.assertIn(tarayici.baglanti().surec.pid, kimlikler)
+        self.assertEqual(_dinlenen_portlar(kimlikler), [])
+
     def test_03_site_sohbetleri(self):
         v = self.get("/api/site-sohbetler?yenile=1")
         self.assertEqual(v["hatalar"], [])
@@ -163,13 +164,16 @@ class SiteEntegrasyonTesti(unittest.TestCase):
         self.assertEqual(sira, 0)
         y = self.yanit_bekle(0)
         self.assertEqual(y["metin"], "Yanıt: Merhaba")
-        # arayüzün yanıt bitince yaptığı kayıt
+        # arayüzün yanıt bitince yaptığı kayıt: sitenin ilk mesajdan sonra geçtiği sohbet adresi de kaydedilir
         self.post("/api/yanit-kaydet", {"sohbet": self.sohbet_id, "mesaj_sira": 0, "site": "chatgpt", "metin": y["metin"]})
         sohbet = next(s for s in self.get("/api/durum")["sohbetler"] if s["id"] == self.sohbet_id)
         self.assertEqual(sohbet["mesajlar"][0]["yanitlar"], {"chatgpt": "Yanıt: Merhaba"})
+        adres = sohbet["site_adresleri"]["chatgpt"]
+        self.assertRegex(adres, r"/test/c/y\d+$")
+        type(self).site_adresi = adres
 
     def test_05_mesajlar_sohbet_acilinca(self):
-        v = self.post("/api/site-sohbet-ac", {"site": "chatgpt", "url": self.kok + "/test/sahte-site.html"})
+        v = self.post("/api/site-sohbet-ac", {"site": "chatgpt", "url": self.site_adresi})
         self.assertEqual([m["rol"] for m in v["mesajlar"]], ["kullanici", "asistan"])
         self.assertEqual([m["metin"] for m in v["mesajlar"]], ["Merhaba", "Yanıt: Merhaba"])
 
@@ -181,6 +185,16 @@ class SiteEntegrasyonTesti(unittest.TestCase):
         self.assertEqual(y["metin"], "Yanıt: Satır 1\nSatır 2\nSatır 3")
         m = self.post("/api/site-sohbet-ac", {"site": "chatgpt", "url": ""})["mesajlar"]
         self.assertEqual(len(m), 4, "çok satırlı metin tek mesaj olarak gitmeli (satır arasında Enter göndermemeli)")
+
+    def test_06b_ortak_sohbet_kendi_site_adresine_doner(self):
+        # Pencere başka bir site sohbetine geçse de ortak sohbetin sonraki mesajı kaydedilen adrese gider.
+        self.post("/api/site-sohbet-ac", {"site": "chatgpt", "url": self.kok + "/test/c/1"})
+        v = self.post("/api/gonder", {"metin": "Üçüncü", "sohbet": self.sohbet_id})
+        self.assertEqual(v["sorunlar"], [])
+        self.assertEqual(v["yanit_bekleyen"][0]["taban"], 1, "sahte site /c/<kimlik> adresinde bir hazır yanıt yükler")
+        self.assertEqual(self.yanit_bekle(1)["metin"], "Yanıt: Üçüncü")
+        konum = ms.site_konumu("chatgpt")
+        self.assertEqual(ms._yol_anahtari(konum), ms._yol_anahtari(self.site_adresi))
 
     def test_07_sohbet_adresine_gitme(self):
         v = self.post("/api/site-sohbet-ac", {"site": "chatgpt", "url": self.kok + "/test/c/2"})
@@ -213,8 +227,7 @@ class SiteEntegrasyonTesti(unittest.TestCase):
         v = self.post("/api/diz", {})
         self.assertEqual(v["adet"], 1)
         hedef = tarayici.hedef(f"127.0.0.1:{self.sunucu.server_port}/test")
-        with cdp.Baglanti(cdp.tarayici_ws(tarayici.CDP_PORT)) as b:
-            sinir = b.komut("Browser.getWindowForTarget", targetId=hedef["id"])["bounds"]
+        sinir = tarayici.baglanti().komut("Browser.getWindowForTarget", targetId=hedef["id"])["bounds"]
         sol, ust, sag, alt = pc.calisma_alani()
         benim_genislik = max(400, (sag - sol) * 28 // 100)  # varsayılan yerleşim: uygulama solda, siteler sağda
         olcek = pc.olcek()
@@ -222,14 +235,14 @@ class SiteEntegrasyonTesti(unittest.TestCase):
         for gercek, beklenen_deger in zip((sinir["left"], sinir["top"], sinir["width"], sinir["height"]), beklenen):
             self.assertAlmostEqual(gercek, beklenen_deger, delta=20, msg=f"{sinir} != {beklenen}")
         # bağımsız olarak elle de yerleştirilebilir
-        yeni = cdp.pencere_sinirlari(tarayici.CDP_PORT, hedef["id"], 100, 80, 640, 480)
-        self.assertEqual((yeni["left"], yeni["top"], yeni["width"], yeni["height"]), (100, 80, 640, 480))
+        yeni = tarayici.pencere_sinirlari(hedef["id"], 100, 80, 640, 480)
+        for gercek, beklenen_deger in zip((yeni["left"], yeni["top"], yeni["width"], yeni["height"]), (100, 80, 640, 480)):
+            self.assertAlmostEqual(gercek, beklenen_deger, delta=2, msg=str(yeni))
 
     def test_11_kapali_site_sorunu_turkce(self):
         # Pencere kapatılınca (Edge'in açık sekmesi kapanınca) site "kapalı" görünür.
         hedef = tarayici.hedef(f"127.0.0.1:{self.sunucu.server_port}/test")
-        with cdp.Baglanti(cdp.tarayici_ws(tarayici.CDP_PORT)) as b:
-            b.komut("Target.closeTarget", targetId=hedef["id"])
+        tarayici.sekmeyi_kapat(hedef["id"])
         d = self.bekle(lambda: (lambda s: s if not s["acik"] else None)(self.chatgpt_durumu()), 10, "kapalı durumu")
         self.assertIsNone(d["giris"])
         with self.assertRaises(urllib.error.HTTPError) as h:

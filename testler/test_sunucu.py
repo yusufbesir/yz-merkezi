@@ -13,10 +13,13 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-GECICI = tempfile.mkdtemp()
-os.environ["YZ_AYAR_DOSYASI"] = str(Path(GECICI) / "ayarlar.json")
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import _ortam  # noqa: E402,F401  (gerçek ayar dosyalarını korur; sunucu modülünden önce)
 import sunucu  # noqa: E402
+
+GECICI = tempfile.mkdtemp()
+sunucu.AYAR_DOSYASI = Path(GECICI) / "ayarlar.json"  # bu dosyanın kendi geçici ayarı (modül içe aktarılmış olsa da)
 
 ANAHTAR = "test-anahtari"
 
@@ -97,12 +100,13 @@ class SunucuTesti(unittest.TestCase):
     @classmethod
     def post(cls, yol, veri, basliklar=None):
         talep = urllib.request.Request(cls.kok + yol, json.dumps(veri).encode(),
-                                       {"Content-Type": "application/json", **(basliklar or {})})
+                                       {"Content-Type": "application/json", "X-YZ-Token": sunucu.BELIRTEC,
+                                        **(basliklar or {})})
         with urllib.request.urlopen(talep) as y:
             return y.read().decode()
 
     def get(self, yol):
-        with urllib.request.urlopen(self.kok + yol) as y:
+        with urllib.request.urlopen(urllib.request.Request(self.kok + yol, headers={"X-YZ-Token": sunucu.BELIRTEC})) as y:
             return json.load(y)
 
     def sohbet(self, sid, model):
