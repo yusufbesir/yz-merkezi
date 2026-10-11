@@ -43,6 +43,7 @@ Yedek yol (masaüstü programları): bilgisayarında kurulu ChatGPT, Gemini ve C
 Notlar:
 - Site seçicileri (düğmeler, yazı kutusu, sohbet listesi) siteler güncellendikçe bozulabilir; hepsi `siteler.py` içinde tek yerdedir. Bir site yanıt vermezse sebep yazı kutusunun altındaki satırda görünür.
 - Site pencerelerini kapatmak oturumu silmez; çerezler `%LOCALAPPDATA%\YZMerkezi\tarayici-profili` klasöründe kalır (proje klasöründe değil, GitHub'a gitmez). Uygulama çerezleri, belirteçleri ya da parolaları okumaz.
+- **Masaüstü kısayolu ve simge**: `kisayol-olustur.ps1` dosyasını PowerShell ile çalıştırırsan Masaüstünde simgeli bir "Yapay Zeka Merkezi" kısayolu oluşur (`powershell -ExecutionPolicy Bypass -File kisayol-olustur.ps1`). Simge özgündür (`arayuz-masaustu/simge.svg`); PNG ve ICO dosyaları `python araclar/simge_uret.py` ile yeniden üretilir (Edge gerekir, ek paket yok).
 - Ayarlar ve yerel sohbet geçmişi `%LOCALAPPDATA%\YZMerkezi\masaustu-ayarlar.json` dosyasında durur. Arka uç `http://127.0.0.1:8766` adresinde yalnızca bu bilgisayardan erişilebilir.
 - Veri konumu: varsayılan klasör `%LOCALAPPDATA%\YZMerkezi` (`YZ_VERI_KLASORU` ile değiştirilebilir); tek tek `YZ_MASAUSTU_AYAR`, `YZ_AYAR_DOSYASI`, `YZ_TARAYICI_PROFILI` ortam değişkenleri önceliklidir. Eski sürümlerden proje klasöründe kalan `masaustu-ayarlar.json`, `ayarlar.json` ve `.tarayici-profili` ilk açılışta bir kez bu klasöre taşınır (profil açık bir Edge tarafından kullanılıyorsa taşınmaz; Edge'i kapatıp yeniden aç).
 
@@ -114,5 +115,6 @@ icacls "D:\YusufII\Projeler\yz-merkezi" /inheritance:r /grant:r "%USERNAME%:(OI)
 - `guvenlik.py`: iki sunucunun ortak güvenlik yardımcıları (başlıklar, istek belirteci, gövde sınırı, hata günlüğü, ayar dosyası yazma/yedekleme)
 - `sunucu.py`: API sürümünün yerel sunucusu ve sağlayıcı bağdaştırıcıları (OpenAI uyumlu, Anthropic, Gemini)
 - `saglayicilar.json`: hazır sağlayıcı listesi; yeni bir satır eklemek yeni sağlayıcı demek
+- `araclar/simge_uret.py`: simgeyi (SVG -> PNG -> ICO) yeniden üretir; `kisayol-olustur.ps1`: Masaüstü kısayolunu oluşturur
 - `arayuz/`: Türkçe arayüz (HTML, CSS, JavaScript)
 - `testler/`: otomatik testler, `python -m unittest discover testler` ile çalışır. `test_entegrasyon.py` gerçek Edge'i geçici profille açıp `sahte-site.html` (ChatGPT'yi taklit eden yerel sayfa ve `sahte-site.js`/`.css` dosyaları, yalnızca `YZ_TEST=1` iken sunulur) üzerinde uçtan uca dener; Edge yoksa atlanır, gerçek sitelere hiç bağlanmaz. `testler/_ortam.py` testlerde ayar dosyası, profil ve veri klasörünü geçici yollara yönlendirir (gerçek dosyalara ve gerçek `%LOCALAPPDATA%\YZMerkezi` klasörüne dokunulmaz)

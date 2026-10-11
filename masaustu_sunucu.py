@@ -875,7 +875,8 @@ def yaniti_kaydet(veri, sohbet_id, sira, site_id, metin, site_adresi=None):
 
 SAHTE_SITE_DOSYALARI = {"/test/sahte-site.js": "sahte-site.js", "/test/sahte-site.css": "sahte-site.css"}
 ICERIK = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
-          ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml"}
+          ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml",
+          ".ico": "image/x-icon", ".png": "image/png"}
 
 
 class Isleyici(guvenlik.GuvenlikKarisimi, BaseHTTPRequestHandler):

@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="zemin" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#e08462"/>
+      <stop offset="1" stop-color="#c4623f"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="58" fill="url(#zemin)"/>
+  <!-- bağlantılar: merkezden üç düğüme -->
+  <g stroke="#f4f3ee" stroke-width="9" stroke-linecap="round" fill="none">
+    <line x1="128" y1="128" x2="128" y2="52"/>
+    <line x1="128" y1="128" x2="62" y2="166"/>
+    <line x1="128" y1="128" x2="194" y2="166"/>
+  </g>
+  <!-- düğümler: yeşil, mavi, turuncu -->
+  <g fill="#f4f3ee">
+    <circle cx="128" cy="52" r="27"/>
+    <circle cx="62" cy="166" r="27"/>
+    <circle cx="194" cy="166" r="27"/>
+  </g>
+  <circle cx="128" cy="52" r="17" fill="#10a37f"/>
+  <circle cx="62" cy="166" r="17" fill="#4285f4"/>
+  <circle cx="194" cy="166" r="17" fill="#d97757"/>
+  <!-- merkez: konuşma balonu -->
+  <g transform="translate(128 128) scale(.9) translate(-128 -128)">
+    <path fill="#262624" d="M106 98h44a20 20 0 0 1 20 20v18a20 20 0 0 1-20 20h-8l-14 16-14-16h-8a20 20 0 0 1-20-20v-18a20 20 0 0 1 20-20z"/>
+    <g fill="#f4f3ee">
+      <circle cx="110" cy="127" r="5.5"/>
+      <circle cx="128" cy="127" r="5.5"/>
+      <circle cx="146" cy="127" r="5.5"/>
+    </g>
+  </g>
+</svg>
