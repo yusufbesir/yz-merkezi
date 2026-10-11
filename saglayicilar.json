@@ -1,0 +1,82 @@
+[
+  {
+    "id": "openai",
+    "ad": "OpenAI (GPT)",
+    "tur": "openai",
+    "adres": "https://api.openai.com/v1",
+    "anahtar_ortam": "OPENAI_API_KEY",
+    "anahtar_gerekli": true,
+    "nereden": "https://platform.openai.com/api-keys",
+    "renk": "#10a37f"
+  },
+  {
+    "id": "gemini",
+    "ad": "Google Gemini",
+    "tur": "gemini",
+    "adres": "https://generativelanguage.googleapis.com/v1beta",
+    "anahtar_ortam": "GEMINI_API_KEY",
+    "anahtar_gerekli": true,
+    "nereden": "https://aistudio.google.com/apikey",
+    "renk": "#4285f4"
+  },
+  {
+    "id": "anthropic",
+    "ad": "Anthropic (Claude)",
+    "tur": "anthropic",
+    "adres": "https://api.anthropic.com/v1",
+    "anahtar_ortam": "ANTHROPIC_API_KEY",
+    "anahtar_gerekli": true,
+    "nereden": "https://console.anthropic.com/settings/keys",
+    "renk": "#d97757"
+  },
+  {
+    "id": "xai",
+    "ad": "xAI (Grok)",
+    "tur": "openai",
+    "adres": "https://api.x.ai/v1",
+    "anahtar_ortam": "XAI_API_KEY",
+    "anahtar_gerekli": true,
+    "nereden": "https://console.x.ai",
+    "renk": "#8a8a8a"
+  },
+  {
+    "id": "deepseek",
+    "ad": "DeepSeek",
+    "tur": "openai",
+    "adres": "https://api.deepseek.com/v1",
+    "anahtar_ortam": "DEEPSEEK_API_KEY",
+    "anahtar_gerekli": true,
+    "nereden": "https://platform.deepseek.com/api_keys",
+    "renk": "#4d6bfe"
+  },
+  {
+    "id": "mistral",
+    "ad": "Mistral",
+    "tur": "openai",
+    "adres": "https://api.mistral.ai/v1",
+    "anahtar_ortam": "MISTRAL_API_KEY",
+    "anahtar_gerekli": true,
+    "nereden": "https://console.mistral.ai/api-keys",
+    "renk": "#fa520f"
+  },
+  {
+    "id": "groq",
+    "ad": "Groq",
+    "tur": "openai",
+    "adres": "https://api.groq.com/openai/v1",
+    "anahtar_ortam": "GROQ_API_KEY",
+    "anahtar_gerekli": true,
+    "nereden": "https://console.groq.com/keys",
+    "renk": "#f55036"
+  },
+  {
+    "id": "openrouter",
+    "ad": "OpenRouter (yüzlerce model)",
+    "tur": "openai",
+    "adres": "https://openrouter.ai/api/v1",
+    "anahtar_ortam": "OPENROUTER_API_KEY",
+    "anahtar_gerekli": true,
+    "nereden": "https://openrouter.ai/keys",
+    "renk": "#6467f2"
+  }
+]

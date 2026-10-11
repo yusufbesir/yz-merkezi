@@ -1,0 +1,4 @@
+# API anahtarları burada durur, asla depoya girmez
+ayarlar.json
+ayarlar.tmp
+__pycache__/
