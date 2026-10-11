@@ -17,11 +17,11 @@
     <div class="kenar-ara"><span>⌕</span><input id="ara" placeholder="Sohbet ara"></div>
     <nav class="kenar-nav">
       <button data-bolum="sohbetler" class="aktif">💬 Sohbetler</button>
-      <button data-bolum="programlar">▦ Programlar</button>
+      <button data-bolum="programlar">▦ Hesapları yönet</button>
     </nav>
-    <div class="kenar-baslik">Programlar</div>
+    <div class="kenar-baslik">Hesaplar ve programlar</div>
     <div id="kenarProgramlar" class="kenar-programlar"></div>
-    <div class="kenar-baslik">Son sohbetler</div>
+    <div class="kenar-baslik satir"><span>Son sohbetler</span><button class="kucuk-dugme" id="sohbetYenile" title="Sohbetleri yenile (site sohbetlerini yeniden oku)">↻ Yenile</button></div>
     <div id="sohbetListesi" class="sohbet-listesi"></div>
     <div class="kenar-alt">
       <button id="ayarlarAc" class="kenar-kullanici">
@@ -37,8 +37,8 @@
       <button class="simge" id="kenarAc" title="Kenar çubuğunu göster" hidden>☰</button>
       <div class="ust-baslik" id="ustBaslik">Yeni sohbet</div>
       <div class="ust-araclar">
-        <button id="hepsiniAc" title="Kapalı programları aç">Hepsini aç</button>
-        <button id="diz" title="Programları ekranda yan yana diz">Yan yana diz</button>
+        <button id="hepsiniAc" title="İşaretli kapalı hesapları ve programları aç">Hepsini aç</button>
+        <button id="diz" title="İşaretli pencereleri ekranda yan yana diz">Yan yana diz</button>
         <button class="simge" id="sohbetMenu" title="Sohbet seçenekleri">⋯</button>
       </div>
     </header>
@@ -52,23 +52,24 @@
     </section>
 
     <footer class="yazma-alani">
+      <div id="girisSeridi" class="giris-seridi" hidden></div>
       <div class="yazici">
         <textarea id="mesaj" rows="1" placeholder="Yapay zekalara ne sormak istersin?"></textarea>
         <div class="yazici-alt">
           <div class="yazici-sol">
-            <button class="simge yuvarlak" id="ekleMenu" title="Program ekle">+</button>
+            <button class="simge yuvarlak" id="ekleMenu" title="Masaüstü programı ekle">+</button>
             <button class="simge yuvarlak" id="dizKucuk" title="Yan yana diz">▦</button>
           </div>
           <div class="yazici-sag">
             <div class="hedef-secici">
-              <button id="hedefDugme" class="hedef-dugme"><span id="hedefOzet">3 program</span> <span class="ok">⌄</span></button>
+              <button id="hedefDugme" class="hedef-dugme"><span id="hedefOzet">3 hesap</span> <span class="ok">⌄</span></button>
               <div id="hedefMenu" class="hedef-menu" hidden></div>
             </div>
             <button id="gonder" class="gonder" title="Gönder (Enter)">↑</button>
           </div>
         </div>
       </div>
-      <div class="yazma-not" id="durumSatiri">Mesaj, işaretli programların hepsine aynı anda gider.</div>
+      <div class="yazma-not" id="durumSatiri">Mesaj, işaretli hesapların ve programların hepsine aynı anda gider.</div>
     </footer>
   </main>
 
@@ -109,7 +110,11 @@
 
         <section data-sekme="programlar" hidden>
           <h2>Programlar</h2>
-          <p class="aciklama">Mesajların gideceği programlar. Bir programda mesaj yanlış yere giderse "Yazı kutusunu öğret"e basıp 4 saniye içinde fareyi o programın yazı kutusunun üstüne getir.</p>
+          <h3>Hesaplar (web)</h3>
+          <p class="aciklama">ChatGPT, Gemini ve Claude web siteleri bu uygulamanın kendi tarayıcı profilinde açılır. Her sitede bir kez giriş yapman yeterli; oturum bu profilde kalır, sohbetler arka planda okunur ve yazılır.</p>
+          <div id="siteAyarListesi" class="program-listesi"></div>
+          <h3>Masaüstü programları (yedek)</h3>
+          <p class="aciklama">Web hesapları yerine bilgisayardaki programlara pano ve tuş taklidiyle yazmak istersen. Bir programda mesaj yanlış yere giderse "Yazı kutusunu öğret"e basıp 4 saniye içinde fareyi o programın yazı kutusunun üstüne getir. Bu programlar mesaj kutusundaki seçiciden işaretlenmediği sürece kullanılmaz.</p>
           <div id="programAyarListesi" class="program-listesi"></div>
           <button id="programEkleAc" class="birincil">+ Program ekle</button>
         </section>
@@ -129,7 +134,7 @@
 
         <section data-sekme="hakkinda" hidden>
           <h2>Hakkında</h2>
-          <p class="aciklama">Yapay Zeka Merkezi, bilgisayarında kurulu ChatGPT, Gemini ve Claude programlarını tek ekrandan kullanmanı sağlar. API anahtarı kullanmaz; programlar kendi hesaplarınla çalışır. Ayarlar <code>masaustu-ayarlar.json</code> dosyasında durur.</p>
+          <p class="aciklama">Yapay Zeka Merkezi, ChatGPT, Gemini ve Claude hesaplarını tek ekrandan kullanmanı sağlar. Web siteleri kendi profilinde (<code>.tarayici-profili</code>) açılır; oturum çerezleri yalnızca o profilde kalır, kullandığın Edge profiline dokunulmaz. API anahtarı yoktur: siteler kendi hesabınla çalışır. Bilgisayarda kurulu masaüstü programları yedek yol olarak durur. Ayarlar ve yerel sohbet geçmişi <code>masaustu-ayarlar.json</code> dosyasında saklanır.</p>
         </section>
       </div>
     </div>

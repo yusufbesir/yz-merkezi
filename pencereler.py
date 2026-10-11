@@ -50,6 +50,14 @@ def dpi_farkindaligi_ac():
         user32.SetProcessDPIAware()
 
 
+def olcek():
+    """Ekran ölçek çarpanı (%125 ekran için 1.25). Tarayıcı pencere sınırları mantıksal (DIP) pikseldir."""
+    try:
+        return max(1.0, user32.GetDpiForSystem() / 96)
+    except (AttributeError, OSError):
+        return 1.0
+
+
 class Pencere:
     def __init__(self, hwnd, pid, baslik, yol):
         self.hwnd, self.pid, self.baslik, self.yol = hwnd, pid, baslik, yol
