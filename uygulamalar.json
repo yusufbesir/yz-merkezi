@@ -1,0 +1,24 @@
+[
+  {
+    "id": "chatgpt",
+    "ad": "ChatGPT",
+    "exe": "ChatGPT.exe",
+    "appid": "OpenAI.Codex_2p2nqsd0c76g0!App",
+    "renk": "#10a37f"
+  },
+  {
+    "id": "gemini",
+    "ad": "Gemini",
+    "exe": "Gemini.exe",
+    "yol": "%LOCALAPPDATA%\\Google\\Gemini\\Gemini.exe",
+    "renk": "#4285f4"
+  },
+  {
+    "id": "claude",
+    "ad": "Claude",
+    "exe": "Claude.exe",
+    "yol_icerir": "WindowsApps",
+    "appid": "Claude_pzs8sxrjxfjjc!Claude",
+    "renk": "#d97757"
+  }
+]

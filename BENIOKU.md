@@ -2,9 +2,30 @@
 
 GPT, Gemini, Claude ve bilgisayarındaki yerel modelleri tek ekranda, yan yana kullanmanı sağlayan Türkçe uygulama. Bir mesaj yazarsın, işaretli bütün pencerelere aynı anda gider ve yanıtları karşılaştırırsın.
 
-## Başlatma
+İki sürümü var:
 
-`baslat.bat` dosyasına çift tıkla. Tarayıcıda `http://127.0.0.1:8765` açılır. Kapatmak için siyah pencerede Ctrl+C.
+1. **Masaüstü sürümü (`baslat.bat`)**: bilgisayarında kurulu ChatGPT, Gemini ve Claude programlarını birleştirir. API anahtarı gerekmez, kendi hesapların ve aboneliklerin kullanılır.
+2. **API sürümü (`baslat-api.bat`)**: tarayıcıda çalışır, API anahtarlarıyla bağlanır.
+
+## Masaüstü sürümü
+
+`baslat.bat` dosyasına çift tıkla; ekranda küçük bir "Yapay Zeka Merkezi" çubuğu açılır.
+
+- **Hepsini aç**: kapalı olan programları açar ve ekranda yan yana dizer.
+- **Yan yana diz**: açık programları ekranı eşit bölerek yan yana koyar, kontrol çubuğunu en alta alır.
+- **Gönder** (ya da Enter): yazdığın mesajı işaretli programların hepsine yapıştırır ve gönderir. Shift+Enter yeni satır açar. "Enter'a da bas" işaretini kaldırırsan sadece yapıştırır, göndermeyi sen yaparsın.
+- **Yazı kutusunu öğret**: bir programda mesaj yanlış yere gidiyorsa bu düğmeye bas, 4 saniye içinde fareyi o programın yazı kutusunun üstüne getir. Yer kaydedilir, pencere boyutu değişse de doğru çalışır.
+- **Program ekle**: yeni bir yapay zeka programı kurduğunda (ya da tarayıcıda bir sohbet sitesi açtığında) onu aç, bu düğmeyle listeden seç. Artık o da mesaj alır.
+
+Notlar:
+- Gönderme sırasında fare ve klavye bir iki saniye programlar arasında gezer; o sırada fareye dokunma.
+- Bir program öne getirilemezse ona hiçbir şey yazılmaz, durum satırında sebebi görünür.
+- Claude masaüstü uygulamasında hangi sohbet açıksa mesaj oraya gider.
+- Ayarlar `masaustu-ayarlar.json` dosyasında durur.
+
+## API sürümünü başlatma
+
+`baslat-api.bat` dosyasına çift tıkla. Tarayıcıda `http://127.0.0.1:8765` açılır. Kapatmak için siyah pencerede Ctrl+C.
 
 Gereken tek şey Python 3.9 veya üstü. Ek paket kurulmaz.
 
@@ -37,7 +58,10 @@ Ollama, LM Studio, Jan, llama.cpp, vLLM, GPT4All veya Text Generation WebUI çal
 
 ## Klasör yapısı
 
-- `sunucu.py`: yerel sunucu ve sağlayıcı bağdaştırıcıları (OpenAI uyumlu, Anthropic, Gemini)
+- `masaustu.pyw`: masaüstü sürümünün kontrol çubuğu
+- `pencereler.py`: Windows pencerelerini bulma, dizme ve yazı gönderme
+- `uygulamalar.json`: tanınan masaüstü programları (ChatGPT, Gemini, Claude)
+- `sunucu.py`: API sürümünün yerel sunucusu ve sağlayıcı bağdaştırıcıları (OpenAI uyumlu, Anthropic, Gemini)
 - `saglayicilar.json`: hazır sağlayıcı listesi; yeni bir satır eklemek yeni sağlayıcı demek
 - `arayuz/`: Türkçe arayüz (HTML, CSS, JavaScript)
 - `testler/`: otomatik testler, `python -m unittest discover testler` ile çalışır
