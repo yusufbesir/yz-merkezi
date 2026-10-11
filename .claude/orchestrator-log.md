@@ -12,5 +12,5 @@
 | 2026-10-11 13:55 | Tam güvenlik denetimi: tehdit modeli, bulgular, düzeltme listesi | güvenlik denetçisi / claude-opus-5-5 | 287.474 | tamam: 2 yüksek (CDP portu, yanlış hedef), 8 orta, 9 düşük bulgu; 18 maddelik görev listesi |
 | 2026-10-11 14:20 | Güvenlik grubu A: HTTP katmanı (başlıklar, belirteç, gövde sınırı, şema, ayar dayanıklılığı, program-ekle, port gaspı, onay) | implementer / claude-sonnet-5-5 | 344.547 | tamam: guvenlik.py, 191 test geçti |
 | 2026-10-11 15:05 | Güvenlik grubu B: CDP porttan boruya geçiş, yanlış hedef düzeltmeleri, veri konumu | implementer / claude-opus-5-5 | 372.031 | tamam: BORU uygulandı, port kalmadı, 217 test geçti |
-| 2026-10-11 15:50 | Güvenlik düzeltmelerinin bağımsız doğrulaması ve sızma denemeleri | verifier / claude-sonnet-5-5 | - | GEÇTİ: 217 test OK, 57/57 sızma denemesi beklenen sonucu verdi, borulu Edge'de dinlenen port yok |
+| 2026-10-11 15:50 | Güvenlik düzeltmelerinin bağımsız doğrulaması ve sızma denemeleri | verifier / claude-sonnet-5-5 | 189.099 | GEÇTİ: 217 test OK, 57/57 sızma denemesi beklenen sonucu verdi, borulu Edge'de dinlenen port yok |
 | 2026-10-11 14:20 | Güvenlik grubu C: pano korumaları, pencere eşleşmesi, site JS yedeklerinin kaldırılması, depo/test korumaları | implementer / claude-sonnet-5-5 | 274.538 | tamam; CSP/sahte site ve API arayüzü innerHTML işleri grup A'ya devredildi |
