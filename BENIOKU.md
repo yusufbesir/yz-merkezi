@@ -29,9 +29,11 @@ Düzen:
 - **Üst çubuk**: Hepsini aç, Yan yana diz (açık site pencereleri ve masaüstü programları), sohbeti yeniden adlandırma.
 
 Ayarlar (sol alttaki adına tıkla ya da Ctrl+,):
-- **Genel**: adın, Enter'a da bas, gönderince kutuyu temizle, yerleşim (bu pencere solda sütun mu altta çubuk mu).
+- **Genel**: adın, Enter'a da bas, gönderince kutuyu temizle, çoklu hedefte onay, göndermeden önce hassas bilgi uyarısı, otomatik yönlendirme, yerleşim (bu pencere solda sütun mu altta çubuk mu).
 - **Görünüm**: tema (Açık / Koyu / Sistem), yazı boyutu.
 - **Programlar**: üstte "Hesaplar (web)" (durum ve "Pencereyi aç / Öne getir"), altta yedek masaüstü programları (Aç, Yazı kutusunu öğret, Kaldır; yeni program ekleme).
+- **Yönlendirme**: tür/zorluk tercih tablosunun salt okunur görünümü, `yonlendirme.json` yolu ve düğmesi, son sınıflandırma.
+- **Jev**: Jev açık/kapalı, yanıtları Jev ile puanla, uzak sunucu uyarısı ve durum (bkz. "Jev" bölümü).
 - **Kısayollar**: Enter gönder, Shift+Enter yeni satır, Ctrl+Shift+O yeni sohbet, Ctrl+B kenar çubuğu, Ctrl+, ayarlar, Ctrl+Shift+D yan yana diz.
 
 Yedek yol (masaüstü programları): bilgisayarında kurulu ChatGPT, Gemini ve Claude programlarına pano ve tuş taklidiyle yazar. İlk açılışta seçili değildir; mesaj kutusundaki seçiciden işaretlersin.
@@ -46,6 +48,64 @@ Notlar:
 - **Masaüstü kısayolu ve simge**: `kisayol-olustur.ps1` dosyasını PowerShell ile çalıştırırsan Masaüstünde simgeli bir "Yapay Zeka Merkezi" kısayolu oluşur (`powershell -ExecutionPolicy Bypass -File kisayol-olustur.ps1`). Simge özgündür (`arayuz-masaustu/simge.svg`); PNG ve ICO dosyaları `python araclar/simge_uret.py` ile yeniden üretilir (Edge gerekir, ek paket yok).
 - Ayarlar ve yerel sohbet geçmişi `%LOCALAPPDATA%\YZMerkezi\masaustu-ayarlar.json` dosyasında durur. Arka uç `http://127.0.0.1:8766` adresinde yalnızca bu bilgisayardan erişilebilir.
 - Veri konumu: varsayılan klasör `%LOCALAPPDATA%\YZMerkezi` (`YZ_VERI_KLASORU` ile değiştirilebilir); tek tek `YZ_MASAUSTU_AYAR`, `YZ_AYAR_DOSYASI`, `YZ_TARAYICI_PROFILI` ortam değişkenleri önceliklidir. Eski sürümlerden proje klasöründe kalan `masaustu-ayarlar.json`, `ayarlar.json` ve `.tarayici-profili` ilk açılışta bir kez bu klasöre taşınır (profil açık bir Edge tarafından kullanılıyorsa taşınmaz; Edge'i kapatıp yeniden aç).
+
+## Yönlendirme ve hassas bilgi uyarısı
+
+İkisinin de temeli kural tabanlıdır (`hassas.py` ve `yonlendirici.py`, bu bilgisayarda çalışır, mesaj metnini kaydetmez). **Jev açıksa** (Ayarlar → Jev, varsayılan açık) ikisi de ayrıca TypeSafe'in Jev karar modeline danışır ve mesaj metni Jev'in uzak sunucusuna gider; ayrıntılar ve yedek davranış aşağıdaki "Jev" bölümünde. Jev kapalıysa, hazır değilse ya da hata verirse yalnızca kurallar kullanılır.
+
+### Hassas bilgi uyarısı
+
+Gönder'e basınca (Enter ya da ok) mesaj, siteye gitmeden önce taranır. Şu kalıplar aranır:
+- **API anahtarı**: `sk-…` (16+ karakter), `sk-ant-…`, `sk-proj-…`, `AIza…` (30+), `ghp_…` (30+), `xoxb-…` ve `-----BEGIN … PRIVATE KEY` başlığı.
+- **Kimlik**: 11 haneli T.C. kimlik kalıbı; rastgele 11 haneli sayılar uyarı çıkarmasın diye algoritma denetimlidir (ilk hane 0 olamaz, 10. ve 11. hane kuralı).
+- **Finansal**: `TR` IBAN kalıbı ve 16 haneli kart numarası (boşluklu ya da tireli; Luhn sağlaması geçmeyen diziler kart sayılmaz).
+- **Parola**: `parola`, `şifre`, `password`, `pin` + `:` ya da `=` + değer (aynı satırda) ve `eposta:parola` çifti.
+
+Bir şey bulunursa mesaj **gönderilmez** ve yazı kutusunun üstünde bir şerit çıkar: "Bu mesaj <bir API anahtarı / bir parola / bir T.C. kimlik numarası / bir IBAN ya da kart numarası> içeriyor olabilir. **Yine de gönder** / **Vazgeç**". "Yine de gönder" aynı mesajı `onayli: true` ile yeniden yollar; şerit görünürken metni değiştirirsen şerit kapanır ve yeni metin yeniden denetlenir. Birden çok kategori varsa şu öncelik kullanılır: API anahtarı, parola, kimlik, finansal. Sunucu (`POST /api/gonder`) uyarı gerekiyorsa hiçbir yere yazmadan `{"onay_gerekli": true, "kategori", "aciklama"}` döndürür (HTTP 200). Anahtar: **Ayarlar → Genel → "Göndermeden önce hassas bilgi uyarısı"** (varsayılan açık). Tarama bir güvenlik ağıdır, kusursuz değildir: kalıba uymayan bir sırrı (örneğin kelimelerle yazılmış bir parolayı) yakalayamaz.
+
+### Ajan seçimi (yönlendirici)
+
+Yazarken (600 ms duraklayınca) mesaj kurallarla sınıflandırılır ve yazı kutusunun üstünde bir öneri şeridi çıkar: "Önerilen: Gemini · <model> (basit · araştırma) — **Uygula** / **Değiştir**".
+- **Tür**: `kod` (kod bloğu ya da fonksiyon/hata/python/javascript/sql), `ceviri` (çevir/translate/ingilizce/türkçeye), `ozet` (özetle/kısaca), `arastirma` (araştır/karşılaştır/kaynak/neden), `yazi` (yaz/taslak/mail/makale), `matematik` (sayısal ifade ya da denklem), değilse `sohbet`. Birden çok kural uyarsa bu sıradaki ilki kazanır.
+- **Zorluk**: uzunluk (200 karakterden kısa `basit`, 1200'den kısa `orta`, üstü `zor`); "ayrıntılı, kapsamlı, analiz, mimari, strateji, plan" geçerse +1 kademe, çok adımlı istek ("önce … sonra" ya da 3+ madde) +1 kademe (en çok `zor`).
+- **Uygula**: yalnızca önerilen siteyi hedef yapar ve gönderim isteğine `model_sec: {"site", "model"}` ekler; sunucu mesajı yazmadan önce sitenin model menüsünden o modeli seçer. Seçilemezse (menü değişmiş, model yok, desteği henüz yok) mesaj **mevcut modelle yine gider** ve sorunlara "model seçilemedi: <sebep>" eklenir. Gönderince hedef seçimin eski haline döner. **Değiştir**: sıradaki öneriye geçer. Bir site sohbeti açıkken şerit çıkmaz.
+- **Otomatik yönlendirme** (Ayarlar → Genel, varsayılan **kapalı**): açıkken öneri kendiliğinden uygulanır; şerit yine görünür ("Otomatik seçildi: …") ve Değiştir ile başka öneriye geçebilirsin.
+- **Model adı**: kurallarda tam model kimliği yazılmaz, yalnızca ad parçası yazılır (ör. `flash`, `sonnet`, `gpt`). Gerçek model, ilgili sitenin canlı model menüsünden (`GET /api/modeller?site=`, 60 sn önbellekli; site açık ve giriş yapılmışsa) büyük/küçük harf duyarsız "içerir" eşleşmesiyle bulunur; ilk eşleşen alınır. Menü okunamazsa ya da eşleşme yoksa yalnızca site önerilir ve sebebi şeritte yazar. Yeni bir sürümü hedeflemek için parçayı uzat (ör. `sonnet 5.5`).
+- Sunucu uçları: `POST /api/oneri` `{metin}` → `{tur, zorluk, oneriler: [{site, model_icerir, model, sebep}], kaynak: "kural" | "jev"}`; `GET /api/yonlendirme` (kural tablosu, dosya yolu, son sınıflandırma; mesaj metni içermez); `POST /api/yonlendirme-ac` (kural dosyasını varsayılan düzenleyicide açar).
+
+### Kuralları düzenleme: `yonlendirme.json`
+
+Tercih sırası proje klasöründeki `yonlendirme.json` dosyasındadır (Ayarlar → Yönlendirme sekmesinde yolu, salt okunur tablosu, son sınıflandırma sonucu ve "yonlendirme.json dosyasını aç" düğmesi vardır). JSON'da yorum satırı olmadığı için açıklama burada:
+
+```
+{
+  "varsayilan": {"basit": [TERCIH, ...], "orta": [...], "zor": [...]},   // her tür için geçerli genel sıra
+  "turler": {
+    "kod":    {"basit": [...], "orta": [...], "zor": [...]},             // türe özel, zorluğa göre
+    "ceviri": {"hepsi": [...]}                                           // "hepsi": her zorluk için
+  }
+}
+TERCIH = {"site": "gemini" | "chatgpt" | "claude", "model_icerir": "flash"}
+```
+- Bir (tür, zorluk) için aranış: `turler[tür][zorluk]`, yoksa `turler[tür]["hepsi"]`, yoksa `varsayilan[zorluk]`. Listedeki sıra tercih sırasıdır; ilk tercih en uygun olandır. Başlangıç değerleri: basit → Gemini `flash`, ChatGPT `mini`, Claude `haiku`; orta → Claude `sonnet`, ChatGPT `gpt`, Gemini `pro`; zor → Claude `opus`, ChatGPT `pro`, Gemini `pro`; kod her zorlukta önce Claude; çeviri ve özet önce Gemini `flash`; zor araştırma önce Gemini `pro`.
+- `_aciklama` gibi `_` ile başlayan ya da tanınmayan anahtarlar yok sayılır. Geçersiz bir bölüm (bilinmeyen site, boş ad, bozuk liste) o bölüm için yerleşik varsayılana düşer; dosya yoksa ya da JSON bozuksa tamamı yerleşik varsayılana düşer ve Ayarlar → Yönlendirme'de uyarı görünür. Uygulama açılışta kırılmaz. Değişiklik bir sonraki öneride geçerlidir (yeniden başlatma gerekmez).
+- Testlerde başka bir dosya kullanmak için `YZ_YONLENDIRME` ortam değişkeni yolu değiştirir.
+
+## Jev
+
+Jev, TypeSafe AI'ın karar (sınıflandırma) modelidir. Uygulama onu üç yerde kullanır; her yerde kural tabanlı yol **yedek** olarak kalır. **Mesajların ve seçtiğin durumlarda yanıtların TypeSafe'in uzak Jev sunucusuna gider (Yusuf'un onayıyla). Yeni bir Jev sürümü ya da yerel seçenek çıkınca yeniden değerlendirilecek.** Jev dışında hiçbir uzak servise veri gönderilmez.
+
+1. **Hassas bilgi uyarısı**: önce yerel tarama (`hassas.tara`). Yerel tarama bir şey bulamazsa ve Jev açıksa metin Jev'e "parola / api_anahtari / kimlik_bilgisi / finansal / yok" seçenekleriyle sorulur. Jev "yok" dışında bir şey seçer ve o seçeneğin olasılığı **≥ 0,6** ise aynı onay şeridi çıkar (`onay_gerekli`, `kaynak: "jev"`, açıklamada "Jev'in değerlendirmesine göre"). Yerel tarama bir şey bulduysa, kullanıcı "Yine de gönder" dediyse ya da uyarı kapalıysa Jev'e sorulmaz. Jev hata verirse sessizce yerel sonuç geçerlidir. Jev sorusu ayar kilidi dışında yapılır (en çok 8 sn).
+2. **Yönlendirici** (`/api/oneri`): Jev açık ve hazırsa tür (7 tür) ve zorluk (basit/orta/zor) iki paralel Jev isteğiyle bulunur ve yanıtta `kaynak: "jev"` olur; öneri şeridinde ve Ayarlar → Yönlendirme'deki "Son sınıflandırma" satırında "Jev" yazar. Kapalı/hazır değil/hata → kural tabanlı, `kaynak: "kural"`. Tercih sırası her iki durumda da `yonlendirme.json`'dan gelir. Not: öneri yazarken (600 ms duraklamada) istenir, yani Jev açıkken her duraklama iki Jev isteği demektir.
+3. **Yanıt puanlama** (Ayarlar → Jev → "Yanıtları Jev ile puanla", varsayılan **kapalı**): ortak sohbette bütün site yanıtları bitince arayüz `POST /api/yanit-puanla` `{sohbet, mesaj_sira}` çağırır. Sunucu kayıtlı yanıtlardan (en az iki) `Soru: …\nYanıtlar: [site: …] …` metnini kurar (soru en çok 600, her yanıt en çok 1500 karakter; toplam 4000 sınırına her yanıt sığacak biçimde eşit pay) ve Jev'e site adlarıyla sorar. Sonuç `{onerilen, site_ad, puan, olasiliklar}`; seçilen yanıta "Önerilen yanıt (Jev)" rozeti konur ve sonuç mesaja `jev_onerilen` olarak kaydedilir (sohbet yeniden açılınca rozet görünür). Ayar kapalıysa, Jev kapalıysa ya da Jev hata verirse 400 ve Türkçe sebep döner; rozet konmaz.
+
+**Ayarlar → Jev**: "Jev açık" (varsayılan açık; kapalıyken Jev'e hiç istek gitmez), "Yanıtları Jev ile puanla", yukarıdaki uyarı metni ve durum: anahtar dosyası bulundu/bulunamadı, model, son çağrı (zaman, sonuç, Türkçe hata sebebi, toplam/başarılı/hatalı sayısı). `GET /api/jev-durum` bunları döner; anahtar değeri ve mesaj içeriği hiçbir yanıtta yoktur.
+
+**Yapılandırma**: Hafıza OS kasasındaki `komuta/jev.json` (varsayılan `D:\YusufII\HAFIZAM1\kasa\komuta\jev.json`; `YZ_JEV_AYAR` ortam değişkeni bu dosyanın yolunu değiştirir). Kullanılan alanlar: `credentials_file` (anahtar dosyasının mutlak yolu), `provider` (`vercel` ya da `typesafe`), `model`, `base_url`, `mode` (`off` ise uygulama da Jev'i hiç çağırmaz), isteğe bağlı `allow_custom_endpoint`. Anahtar **yalnızca** `credentials_file` dosyasından okunur (Vercel: `{"AI_GATEWAY_API_KEY": "…"}`, TypeSafe: `{"TYPESAFE_API_KEY": "…"}`); ortam değişkenleri okunmaz. Dosya yoksa ya da biçimi bozuksa Jev "hazır değil" sayılır ve uygulama kurallarla çalışır. Anahtar yalnızca bellekte ve istek başlığında kullanılır; hiçbir dosyaya, loga, duruma ya da hata metnine yazılmaz.
+
+**Çağrı biçimi** (`jev.py`; kasadaki `araclar/jev_client.py` istemcisinin `choice` sorusuyla aynı): `POST <base_url>/v1/systemone` (`base_url` `/v1` ile bitiyorsa `<base_url>/systemone`), başlıklar `Authorization: Bearer <anahtar>` ve `Content-Type: application/json`, gövde `{"model", "state": {"text", "context"?}, "questions": {"secim": {"type": "choice", "instructions", "criteria": {seçenek: açıklama}}}}`; yanıt `{"answers": {"secim": {"type": "choice", "choice", "probabilities": {seçenek: olasılık}}}}`. Olasılıklar seçeneklerle birebir uyuşmalı, toplamı ~1 olmalı (Vercel'in iki ondalığa yuvarlaması için seçenek başına ±0,005 tolerans) ve seçim en olası seçenek olmalı; değilse yanıt kullanılmaz. `jev.sinifla(metin, secenekler, baglam="")` → `{"secim", "puan" (seçimin olasılığı), "olasiliklar"}` ya da Türkçe `JevHatasi`. Zaman aşımı 8 sn, metin 4000 karakterle kısaltılır, otomatik tekrar yok.
+
+**Güvenlik**: anahtar yalnızca sağlayıcının resmi HTTPS sunucusuna (`vercel` → `ai-gateway.vercel.sh`, `typesafe` → `api.typesafe.ai`) ya da yerel bir ağ geçidine (localhost/127.0.0.1/::1; ortam vekili atlanır) gider; başka bir sunucu için `jev.json`'da açıkça `"allow_custom_endpoint": true` gerekir. Yönlendirme (3xx) izlenmez. Her çağrı yalnızca sayaç, zaman, sonuç ve Türkçe hata sebebiyle bellekte kaydedilir; mesaj ve yanıt içeriği kaydedilmez. Testler gerçek `jev.json`'a ve anahtara dokunmaz: `testler/_ortam.py` `YZ_JEV_AYAR`'ı var olmayan geçici bir yola yönlendirir; `testler/test_jev.py` geçici ayar/anahtar dosyası (sahte değer) ve 127.0.0.1'de sahte bir HTTP sunucusu kullanır.
 
 ## API sürümünü başlatma
 
@@ -103,6 +163,19 @@ Klasör izinleri için öneri (kendi kullanıcın, SYSTEM ve Yöneticiler dış�
 icacls "D:\YusufII\Projeler\yz-merkezi" /inheritance:r /grant:r "%USERNAME%:(OI)(CI)F" "SYSTEM:(OI)(CI)F" "Administrators:(OI)(CI)F"
 ```
 
+## Hafıza OS bağlantısı
+
+Masaüstü sürümü, kişisel hafıza kasana (Hafıza OS, varsayılan `D:\YusufII\HAFIZAM1\kasa`; `YZ_KASA` ortam değişkeniyle değişir) bağlıdır; ChatGPT, Gemini ve Claude aynı hafızadan beslenir. Ayarlar → **Hafıza** bölümünde iki anahtar (ikisi de varsayılan açık), kasanın yolu ve durum görünür.
+
+Veri akışı:
+1. **Okuma ("Hafızayı mesaja ekle")**: mesaj gönderilirken kasadaki `araclar/hafiza.py --vault . context "<mesaj>" --limit 5 --char-budget 1200 --local` yerel bir alt süreç olarak çalıştırılır (kasa klasörü çalışma klasörüdür, en çok 10 sn; `--local` ile Mem0 ve ağ kullanılmaz). Dönen bağlam mesajın başına `Bağlam (kişisel notlarımdan, yalnızca gerekiyorsa kullan):` başlığıyla eklenir ve `---` çizgisinden sonra senin mesajın gelir. **Eklenen bağlam, mesajı alan her siteye (işaretli hesaplara) gider**; yani kasadan seçilen satırlar o şirketlerin sunucularına ulaşır. İstemediğinde anahtarı kapat.
+2. **Sır süzgeci**: dönen metinde `sk-`, `AIza`, `ghp_`, `-----BEGIN`, parola, şifre (ve password, API key benzeri) geçen satırlar atılır; yani sır benzeri kayıtlar siteye gitmez. Bağlam boşsa, araç hata verirse ya da zaman aşımına uğrarsa hiçbir şey eklenmez ve mesaj olduğu gibi gider (sebep Ayarlar → Hafıza durumunda görünür).
+3. **Geçmiş**: yerel sohbet geçmişinde ham mesaj ve eklenen bağlam ayrı alanlarda tutulur; mesaj balonunun altında katlanabilir "Hafızadan eklenen bağlam (N karakter)" bölümü neyin gittiğini gösterir. "Yeniden gönder" ham mesajı yeniden gönderir (bağlam yeniden aranır).
+4. **Yazma ("Yanıtları hafızaya aday olarak yaz")**: Hafıza OS'a (katalog, Mem0, `hafiza.py candidate-add` kuyruğu) doğrudan yazılmaz; o kuyruk kaynak dosyada aynen bulunan doğrulanmış gerçekler içindir, sohbet yanıtı özetleri bu koşulu taşımaz. Bunun yerine kasanın ham giriş klasörüne `gelen-kutusu/yz-merkezi/YYYY-MM-DD.md` dosyasına **yalnızca ekleme** yapılır (frontmatter: `kaynak: yz-merkezi`; her kayıt: zaman, site, soru özeti en çok 200, yanıt özeti en çok 600 karakter). Var olan dosya ve notlar silinmez, taşınmaz, yeniden adlandırılmaz, üzerine yazılmaz; soru ya da yanıtında sır benzeri içerik olan kayıt hiç yazılmaz; aynı kayıt iki kez yazılmaz. Bu kayıtlar onaylı bilgi değildir, kasanın kendi inceleme akışı değerlendirir.
+5. **Durum**: `GET /api/hafiza-durum` yanıtı `{kasa_var, hafiza_py_var, son_mod, son_hata}` (ve arayüzde gösterilen `kasa` yolu) döner.
+
+Testler gerçek kasaya dokunmaz: `testler/_ortam.py` `YZ_KASA`'yı var olmayan geçici bir yola yönlendirir, `test_hafiza_kopru.py` geçici bir kasa ve sahte `araclar/hafiza.py` kurar.
+
 ## Klasör yapısı
 
 - `masaustu_sunucu.py`: masaüstü sürümünün arka ucu (site durumu, sohbet listesi, gönderme, yanıt okuma, dizme; yedek olarak masaüstü programları)
@@ -111,8 +184,12 @@ icacls "D:\YusufII\Projeler\yz-merkezi" /inheritance:r /grant:r "%USERNAME%:(OI)
 - `tarayici.py`: Edge'i CDP borusuyla (ağ portu yok) ve ayrı profille (`%LOCALAPPDATA%\YZMerkezi\tarayici-profili`) başlatır; site sekmelerini bulur, pencere açar/dizer
 - `cdp.py`: Edge'i Chrome DevTools Protocol ile anonim borular üzerinden denetleyen küçük istemci (`BoruBaglantisi`, sekme oturumu `Oturum`; yalnızca standart kütüphane)
 - `siteler.py`: ChatGPT, Gemini ve Claude sitelerinin seçicileri ve sayfada çalışan JS parçaları (giriş denetimi, sohbet listesi, mesajlar, gönderme, yanıt)
+- `hassas.py`: gönderme öncesi hassas bilgi taraması (API anahtarı, T.C. kimlik, IBAN/kart, parola; kural tabanlı)
+- `yonlendirici.py` ve `yonlendirme.json`: mesajı sınıflandırıp site/model önerir; tercih sırası `yonlendirme.json` dosyasında düzenlenir
+- `jev.py`: Jev (TypeSafe karar modeli) istemcisi; hassas bilgi uyarısı, yönlendirme ve yanıt puanlamada kullanılır, kurallar yedektir (yalnızca standart kütüphane)
 - `uygulamalar.json`: tanınan masaüstü programları (ChatGPT, Gemini, Claude)
 - `guvenlik.py`: iki sunucunun ortak güvenlik yardımcıları (başlıklar, istek belirteci, gövde sınırı, hata günlüğü, ayar dosyası yazma/yedekleme)
+- `hafiza_kopru.py`: Hafıza OS köprüsü (kasadaki `hafiza.py context` çağrısı, sır süzgeci, gelen kutusuna aday kayıt ekleme; yalnızca standart kütüphane)
 - `sunucu.py`: API sürümünün yerel sunucusu ve sağlayıcı bağdaştırıcıları (OpenAI uyumlu, Anthropic, Gemini)
 - `saglayicilar.json`: hazır sağlayıcı listesi; yeni bir satır eklemek yeni sağlayıcı demek
 - `araclar/simge_uret.py`: simgeyi (SVG -> PNG -> ICO) yeniden üretir; `kisayol-olustur.ps1`: Masaüstü kısayolunu oluşturur

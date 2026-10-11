@@ -54,6 +54,8 @@
 
     <footer class="yazma-alani">
       <div id="girisSeridi" class="giris-seridi" hidden></div>
+      <div id="hassasSeridi" class="hassas-seridi" hidden></div>
+      <div id="oneriSeridi" class="oneri-seridi" hidden></div>
       <div class="yazici">
         <textarea id="mesaj" rows="1" placeholder="Yapay zekalara ne sormak istersin?"></textarea>
         <div class="yazici-alt">
@@ -82,6 +84,9 @@
         <button data-sekme="genel" class="aktif">Genel</button>
         <button data-sekme="gorunum">Görünüm</button>
         <button data-sekme="programlar">Programlar</button>
+        <button data-sekme="hafiza">Hafıza</button>
+        <button data-sekme="yonlendirme">Yönlendirme</button>
+        <button data-sekme="jev">Jev</button>
         <button data-sekme="kisayollar">Kısayollar</button>
         <button data-sekme="hakkinda">Hakkında</button>
       </nav>
@@ -94,6 +99,8 @@
           <div class="ayar-satir"><div><b>Enter'a da bas</b><small>Kapalıysa mesaj yalnızca yapıştırılır, göndermeyi sen yaparsın.</small></div><label class="anahtar"><input type="checkbox" id="ayarEnter"><span></span></label></div>
           <div class="ayar-satir"><div><b>Gönderince kutuyu temizle</b><small>Mesaj gittikten sonra yazı kutusu boşalır.</small></div><label class="anahtar"><input type="checkbox" id="ayarTemizle"><span></span></label></div>
           <div class="ayar-satir"><div><b>Çoklu hedefte onay iste</b><small>Birden fazla hesap seçiliyken ilk gönderimde "Şu hesaplara gidecek" diye bir kez sorar.</small></div><label class="anahtar"><input type="checkbox" id="ayarCokluOnay"><span></span></label></div>
+          <div class="ayar-satir"><div><b>Göndermeden önce hassas bilgi uyarısı</b><small>Mesajda API anahtarı, parola, T.C. kimlik numarası, IBAN ya da kart numarası gibi kalıplar varsa göndermeden önce sorar ("Yine de gönder / Vazgeç"). Önce bu bilgisayarda kurallarla taranır; kurallar bir şey bulamazsa ve Jev açıksa (Ayarlar → Jev) metin ikinci görüş için Jev'e de gider.</small></div><label class="anahtar"><input type="checkbox" id="ayarHassasUyari"><span></span></label></div>
+          <div class="ayar-satir"><div><b>Otomatik yönlendirme</b><small>Açıkken yazdığın mesaja göre önerilen hesap ve model kendiliğinden seçilir; öneri şeridi yine görünür ve "Değiştir" ile başka öneriye geçebilirsin. Kapalıyken öneri yalnızca gösterilir.</small></div><label class="anahtar"><input type="checkbox" id="ayarOtomatikYonlendirme"><span></span></label></div>
           <div class="ayar-satir"><div><b>Yerleşim</b><small>"Yan yana diz" komutunda bu pencere nerede dursun?</small></div>
             <select id="ayarYerlesim"><option value="sol">Solda sütun</option><option value="alt">Altta çubuk</option></select></div>
         </section>
@@ -119,6 +126,34 @@
           <p class="aciklama">Web hesapları yerine bilgisayardaki programlara pano ve tuş taklidiyle yazmak istersen. Bir programda mesaj yanlış yere giderse "Yazı kutusunu öğret"e basıp 4 saniye içinde fareyi o programın yazı kutusunun üstüne getir. Bu programlar mesaj kutusundaki seçiciden işaretlenmediği sürece kullanılmaz.</p>
           <div id="programAyarListesi" class="program-listesi"></div>
           <button id="programEkleAc" class="birincil">+ Program ekle</button>
+        </section>
+
+        <section data-sekme="hafiza" hidden>
+          <h2>Hafıza</h2>
+          <p class="aciklama">Hafıza OS kasandaki notlar üç siteye (ChatGPT, Gemini, Claude) aynı kaynaktan bağlam olarak verilebilir. Eklenen bağlam o sitelere gider; sır benzeri satırlar (anahtar, parola, şifre) dışarıda bırakılır.</p>
+          <div class="ayar-satir"><div><b>Hafızayı mesaja ekle</b><small>Gönderilen mesajın başına kişisel notlarından ilgili birkaç satır eklenir. Bağlam bulunamazsa ya da hafıza aracı yanıt vermezse mesaj olduğu gibi gider.</small></div><label class="anahtar"><input type="checkbox" id="ayarHafizaEkle"><span></span></label></div>
+          <div class="ayar-satir"><div><b>Yanıtları hafızaya aday olarak yaz</b><small>Alınan yanıtların kısa özeti kasanın gelen kutusuna eklenir (yalnızca ekleme; var olan notlara dokunulmaz, katalog ve Mem0'a doğrudan yazılmaz).</small></div><label class="anahtar"><input type="checkbox" id="ayarHafizaAday"><span></span></label></div>
+          <p class="aciklama" id="hafizaDurum">Durum okunuyor…</p>
+          <p class="aciklama" id="hafizaKasa"></p>
+        </section>
+
+        <section data-sekme="yonlendirme" hidden>
+          <h2>Yönlendirme</h2>
+          <p class="aciklama">Yazdığın mesaj sınıflandırılır (tür ve zorluk; Jev açık ve hazırsa Jev ile, değilse kurallarla) ve aşağıdaki tercih sırasına göre bir hesap ve model önerilir. Model adı sitenin canlı menüsünden bulunur; menü okunamazsa yalnızca hesap önerilir. Kuralları değiştirmek için dosyayı düzenle; değişiklik bir sonraki öneride geçerli olur.</p>
+          <div class="ayar-satir"><div><b>Kural dosyası</b><small><code id="yonlendirmeDosya">…</code></small></div><button id="yonlendirmeAc" class="birincil">yonlendirme.json dosyasını aç</button></div>
+          <p class="aciklama" id="yonlendirmeSon">Son sınıflandırma: henüz yok.</p>
+          <p class="aciklama" id="yonlendirmeUyari"></p>
+          <table class="yonlendirme-tablo" id="yonlendirmeTablo"></table>
+        </section>
+
+        <section data-sekme="jev" hidden>
+          <h2>Jev</h2>
+          <p class="aciklama">Jev, TypeSafe'in karar modelidir. Açıkken hassas bilgi uyarısında (yerel kurallar bir şey bulamazsa ikinci görüş olarak) ve ajan seçiminde (tür ve zorluk) kullanılır. Jev kapalıysa, hazır değilse ya da hata verirse uygulama kurallarla çalışmaya devam eder.</p>
+          <p class="aciklama uyari-metni">Mesajların ve seçtiğin durumlarda yanıtların TypeSafe'in uzak Jev sunucusuna gider (Yusuf'un onayıyla). Yeni bir Jev sürümü ya da yerel seçenek çıkınca yeniden değerlendirilecek.</p>
+          <div class="ayar-satir"><div><b>Jev açık</b><small>Kapalıyken Jev'e hiçbir istek gönderilmez; hassas bilgi uyarısı ve yönlendirme yalnızca kurallarla çalışır.</small></div><label class="anahtar"><input type="checkbox" id="ayarJevAcik"><span></span></label></div>
+          <div class="ayar-satir"><div><b>Yanıtları Jev ile puanla</b><small>Ortak sohbette bütün hesapların yanıtları gelince soru ve yanıtların ilk kısmı Jev'e gider; en iyi bulunan yanıta "Önerilen yanıt (Jev)" rozeti konur. Varsayılan kapalı.</small></div><label class="anahtar"><input type="checkbox" id="ayarJevPuanla"><span></span></label></div>
+          <p class="aciklama" id="jevDurum">Durum okunuyor…</p>
+          <p class="aciklama" id="jevAyrinti"></p>
         </section>
 
         <section data-sekme="kisayollar" hidden>

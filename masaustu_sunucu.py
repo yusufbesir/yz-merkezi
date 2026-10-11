@@ -28,9 +28,13 @@ from urllib.parse import parse_qs, urlparse
 
 import cdp
 import guvenlik
+import hassas
+import hafiza_kopru
+import jev
 import pencereler as pc
 import siteler
 import tarayici
+import yonlendirici
 
 KOK = Path(__file__).resolve().parent
 ARAYUZ = KOK / "arayuz-masaustu"
@@ -46,6 +50,11 @@ SITE_ZAMAN_ASIMI = 8          # sn: bir sitenin tek sorgusu için üst sınır
 SOHBET_YUKLEME_SURESI = 10    # sn: sohbet adresine gidince mesajların yüklenmesi için üst sınır
 SAYFA_ACILMA_SURESI = 15      # sn: yeni açılan site penceresinin görünmesi için üst sınır
 ADRES_DOGRULAMA_SURESI = 6    # sn: gezinmeden sonra adres çubuğunun hedefe varması için üst sınır
+MODEL_ONBELLEK_SURESI = 60    # sn: bir sitenin model listesi bu süre içinde yeniden okunmaz
+MODEL_HATA_ONBELLEK_SURESI = 10  # sn: liste alınamayan site (kapalı, giriş yok, destek yok) bu süre yeniden sorulmaz
+MODEL_ZAMAN_ASIMI = 12        # sn: model menüsü JS'i için üst sınır
+MODEL_KILIT_BEKLEME = 2       # sn: site meşgulse (gönderme/gezinme sürüyor) model listesi için en çok bu kadar beklenir
+MODEL_DESTEGI_YOK = "model menüsü desteği henüz yok"
 KUTU_DOGRULAMA_SINIRI = 90000  # karakter: bundan uzun metinde yazılan metin karşılaştırılmaz
 YANIT_KAYIT_SINIRI = 100000   # yerel geçmişe kaydedilecek tek yanıtın en uzun boyu
 VARSAYILAN_AYARLAR = {
@@ -56,6 +65,19 @@ VARSAYILAN_AYARLAR = {
 AYAR_SECENEKLERI = {"tema": {"acik", "koyu", "sistem"}, "yazi_boyutu": {"kucuk", "orta", "buyuk"},
                     "yerlesim": {"sol", "alt"}}
 AYAR_MANTIKSAL = ("enter_bas", "kutuyu_temizle")
+# Hafıza OS köprüsü (hafiza_kopru.py): hafızayı mesaja ekle / yanıtları hafızaya aday olarak yaz (ikisi de varsayılan açık).
+VARSAYILAN_AYARLAR.update(hafiza_ekle=True, hafiza_aday=True)
+AYAR_MANTIKSAL += ("hafiza_ekle", "hafiza_aday")
+# Hassas bilgi uyarısı (hassas.py) ve ajan seçimi (yonlendirici.py): uyarı varsayılan açık, otomatik yönlendirme kapalı.
+VARSAYILAN_AYARLAR.update(hassas_uyari=True, otomatik_yonlendirme=False)
+AYAR_MANTIKSAL += ("hassas_uyari", "otomatik_yonlendirme")
+# Jev (jev.py, TypeSafe karar modeli): açık/kapalı varsayılan AÇIK; yanıt puanlama varsayılan KAPALI (yanıtlar Jev'e gider).
+VARSAYILAN_AYARLAR.update(jev_acik=True, jev_yanit_puanla=False)
+AYAR_MANTIKSAL += ("jev_acik", "jev_yanit_puanla")
+JEV_HASSAS_ESIGI = 0.6        # Jev'in "yok" dışı seçiminin olasılığı en az bu kadarsa onay istenir
+JEV_PUANLAMA_BUTCESI = 3800   # karakter: puanlamada soru + yanıtların toplamı (jev.METIN_EN_FAZLA'nın altında)
+JEV_YANIT_EN_FAZLA = 1500     # karakter: puanlamada her yanıttan en çok bu kadar
+JEV_SORU_EN_FAZLA = 600       # karakter: puanlamada sorudan en çok bu kadar
 AD_EN_FAZLA = 40
 # Web hesapları (CDP) varken bu tarayıcılar masaüstü programı olarak eklenemez.
 TARAYICI_EXELERI = {"msedge.exe", "chrome.exe", "firefox.exe", "brave.exe", "opera.exe"}
@@ -65,7 +87,8 @@ BELIRTEC = guvenlik.yeni_belirtec()
 AYAR_UYARISI = None  # ayar dosyası bozuk çıkıp yedeklenirse arayüze gösterilecek Türkçe uyarı
 
 KILIT = threading.Lock()
-KILITSIZ = {"/api/site-ac", "/api/site-sohbet-ac", "/api/pencere-ac"}
+KILITSIZ = {"/api/site-ac", "/api/site-sohbet-ac", "/api/pencere-ac", "/api/oneri", "/api/yonlendirme-ac",
+            "/api/yanit-puanla"}  # yanıt puanlama Jev'i beklerken ayar kilidini tutmaz (kilidi kendisi kısa süre alır)
 is_kilidi = threading.Lock()  # aynı anda tek gönderme/öğretme işlemi
 
 
@@ -425,6 +448,292 @@ def site_yaniti(site_id, taban=None):
     return {"yaziyor": bool(yaziyor), "metin": metin if isinstance(metin, str) else "", "bekleniyor": bekleniyor}
 
 
+# ---------------------------------------------------------------- model menüsü ve yönlendirme
+
+_MODEL_ONBELLEGI = {}      # site kimliği -> {"zaman": monotonic, "modeller": [...], "sebep": str}
+_MODEL_KILIDI = threading.Lock()
+_SON_SINIFLANDIRMA = {}    # son /api/oneri sınıflandırması (yalnızca tür/zorluk/zaman; mesaj metni saklanmaz)
+
+
+def _modelleri_temizle(ham):
+    """Sayfadan gelen model listesini [{"id", "ad", "secili"}] biçimine indirir (en çok 100 kayıt)."""
+    sonuc = []
+    for m in ham if isinstance(ham, list) else []:
+        ad = m.get("ad") if isinstance(m, dict) else None
+        if isinstance(ad, str) and ad.strip():
+            sonuc.append({"id": str(m.get("id") or ad)[:120], "ad": ad.strip()[:120], "secili": bool(m.get("secili"))})
+        if len(sonuc) >= 100:
+            break
+    return sonuc
+
+
+def _model_listesi_oku(site_id):
+    """Sitenin model menüsünü (siteler.js_parca "model_listesi") okur: {"modeller": [...], "sebep": str}.
+
+    Site açık ve giriş yapılmışsa okunur; değilse boş liste ve Türkçe sebep döner. Aynı site penceresinde
+    gönderme/gezinme sürüyorsa en çok MODEL_KILIT_BEKLEME sn beklenir (menüye dokunup gönderimi bozmamak için).
+    """
+    kayit = siteler.site(site_id)
+    ad = kayit["ad"]
+    try:
+        parca = siteler.js_parca(site_id, "model_listesi")
+    except (ValueError, KeyError):
+        return {"modeller": [], "sebep": MODEL_DESTEGI_YOK}
+    kilit = _SITE_KILITLERI[site_id]
+    if not kilit.acquire(timeout=MODEL_KILIT_BEKLEME):
+        return {"modeller": [], "sebep": f"{ad} şu an meşgul"}
+    try:
+        b = site_sayfasi(site_id)
+        if not b:
+            return {"modeller": [], "sebep": f"{ad} penceresi kapalı"}
+        try:
+            giris = b.degerlendir(kayit["js"]["giris_var_mi"], zaman=SITE_ZAMAN_ASIMI)
+            hata = _js_hatasi(giris)
+            if hata:
+                return {"modeller": [], "sebep": hata}
+            if not (isinstance(giris, dict) and giris.get("giris")):
+                return {"modeller": [], "sebep": f"{ad} için giriş yapılmamış"}
+            sonuc = b.degerlendir(parca, zaman=MODEL_ZAMAN_ASIMI)
+        except cdp.CdpHatasi as h:
+            return {"modeller": [], "sebep": str(h)}
+        finally:
+            b.kapat()
+    finally:
+        kilit.release()
+    hata = _js_hatasi(sonuc)
+    if hata:
+        return {"modeller": [], "sebep": hata}
+    if not isinstance(sonuc, dict) or not isinstance(sonuc.get("modeller"), list):
+        return {"modeller": [], "sebep": "Model listesi beklenmeyen biçimde geldi"}
+    modeller = _modelleri_temizle(sonuc["modeller"])
+    return {"modeller": modeller, "sebep": "" if modeller else str(sonuc.get("sebep") or "Menüde model bulunamadı")[:200]}
+
+
+def site_modelleri(site_id, yenile=False):
+    """{"site", "modeller", "sebep"}: sitenin canlı model listesi, başarılıysa 60 sn önbellekli.
+
+    Liste alınamazsa (pencere kapalı, giriş yok, menü desteği yok) boş liste ve sebep döner; bu durum
+    10 sn önbelleğe alınır (her tuş vuruşunda sayfaya yeniden sorulmasın).
+    """
+    if site_id not in siteler.SITELER:
+        raise IsHatasi("Site bulunamadı.")
+    simdi = time.monotonic()
+    with _MODEL_KILIDI:
+        k = _MODEL_ONBELLEGI.get(site_id)
+        if k and not yenile and simdi - k["zaman"] < (MODEL_ONBELLEK_SURESI if k["modeller"] else MODEL_HATA_ONBELLEK_SURESI):
+            return {"site": site_id, "modeller": k["modeller"], "sebep": k["sebep"]}
+    try:
+        sonuc = _model_listesi_oku(site_id)
+    except Exception as h:  # noqa: BLE001
+        sonuc = {"modeller": [], "sebep": guvenlik.beklenmeyen_hata(f"modeller/{site_id}", h)}
+    with _MODEL_KILIDI:
+        _MODEL_ONBELLEGI[site_id] = {"zaman": time.monotonic(), "modeller": sonuc["modeller"], "sebep": sonuc["sebep"]}
+    return {"site": site_id, "modeller": sonuc["modeller"], "sebep": sonuc["sebep"]}
+
+
+# ---------------------------------------------------------------- Jev (jev.py): kural tabanlı yolların önünde, yedekli
+
+# Seçenek açıklamaları Jev'e gider (kullanıcıya görünmez); anahtarlar uygulamanın kendi kategori adlarıdır.
+JEV_HASSAS_SECENEKLERI = {
+    "parola": "The text contains a password, PIN or passphrase (in any wording, e.g. spelled out in words).",
+    "api_anahtari": "The text contains an API key, access token, private key or other machine credential.",
+    "kimlik_bilgisi": "The text contains a personal identity number or identity document data (national ID, passport).",
+    "finansal": "The text contains a bank account number, IBAN, card number or similar financial account data.",
+    "yok": "The text contains none of these secrets (ordinary text, or only mentions such things without a value).",
+}
+JEV_HASSAS_ACIKLAMALARI = {"parola": "bir parola", "api_anahtari": "bir API anahtarı",
+                           "kimlik_bilgisi": "kimlik bilgisi", "finansal": "finansal bilgi (hesap/kart)"}
+JEV_TUR_SECENEKLERI = {
+    "arastirma": "Research, comparison or a question asking for sources or reasons.",
+    "kod": "Programming: writing, fixing or explaining code, errors, SQL.",
+    "yazi": "Writing a text: email, article, draft, story.",
+    "ceviri": "Translation between languages.",
+    "ozet": "Summarizing or shortening a given text.",
+    "sohbet": "Casual chat, greeting or a simple everyday question.",
+    "matematik": "Mathematics: calculation, equation, proof.",
+}
+JEV_ZORLUK_SECENEKLERI = {
+    "basit": "Simple: short, one step, a fast small model is enough.",
+    "orta": "Medium: needs some reasoning or a longer answer.",
+    "zor": "Hard: long, multi-step, deep analysis, architecture or strategy; needs the strongest model.",
+}
+
+
+def jev_kullanilabilir(ayarlar):
+    """Ayarlar → Jev açık ve jev.py hazır (ayar + anahtar dosyası) ise True; ağa çıkmaz."""
+    return ayarlar.get("jev_acik", True) is not False and jev.hazir_mi()
+
+
+def jev_hassas_tara(metin, ayarlar):
+    """Yerel tarama temiz çıkınca Jev'in ikinci görüşü: {"kategori", "aciklama", "puan", "kaynak": "jev"} ya da None.
+
+    Jev kapalı/hazır değil/hata verirse sessizce None (yerel sonuç geçerli kalır).
+    """
+    if not jev_kullanilabilir(ayarlar):
+        return None
+    try:
+        s = jev.sinifla(metin, JEV_HASSAS_SECENEKLERI, acik=True)
+    except Exception:  # noqa: BLE001  (Jev hatası gönderimi hiçbir koşulda engellemez)
+        return None
+    if s["secim"] == "yok" or s["secim"] not in JEV_HASSAS_ACIKLAMALARI or s["puan"] < JEV_HASSAS_ESIGI:
+        return None
+    return {"kategori": s["secim"], "aciklama": f"{JEV_HASSAS_ACIKLAMALARI[s['secim']]} (Jev'in değerlendirmesine göre)",
+            "puan": round(s["puan"], 3), "kaynak": "jev"}
+
+
+def jev_ile_siniflandir(metin, ayarlar):
+    """Yönlendirici için Jev'le tür ve zorluk (iki istek paralel): {"tur", "zorluk"} ya da None (kurala dönülür)."""
+    if not jev_kullanilabilir(ayarlar):
+        return None
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as havuz:
+        tur = havuz.submit(jev.sinifla, metin, JEV_TUR_SECENEKLERI)
+        zorluk = havuz.submit(jev.sinifla, metin, JEV_ZORLUK_SECENEKLERI)
+        try:
+            return {"tur": tur.result()["secim"], "zorluk": zorluk.result()["secim"]}
+        except Exception:  # noqa: BLE001  (JevHatasi ya da beklenmeyen: kural tabanlı yol)
+            return None
+
+
+def jev_durumu():
+    """/api/jev-durum: jev.durum() + uygulamadaki iki anahtar. Anahtar değeri ve mesaj içeriği yoktur."""
+    ayarlar = ayarlari_oku()["ayarlar"]
+    return {**jev.durum(), "acik": ayarlar.get("jev_acik", True) is not False,
+            "yanit_puanla": ayarlar.get("jev_yanit_puanla") is True}
+
+
+def _puanlama_metni(soru, yanitlar):
+    """"Soru: …\\nYanıtlar: [site: …] …" metni; her yanıt en çok JEV_YANIT_EN_FAZLA karakter ve toplam bütçeye sığar."""
+    soru = " ".join(str(soru or "").split())[:JEV_SORU_EN_FAZLA]
+    pay = max(200, min(JEV_YANIT_EN_FAZLA, (JEV_PUANLAMA_BUTCESI - len(soru)) // max(1, len(yanitlar)) - 16))
+    parcalar = [f"[{site}: {metin.strip()[:pay]}]" for site, metin in yanitlar.items()]
+    return f"Soru: {soru}\nYanıtlar: " + "\n".join(parcalar)
+
+
+def yanit_puanla(g):
+    """/api/yanit-puanla {sohbet, mesaj_sira}: ortak sohbetteki site yanıtlarından en iyisini Jev'e seçtirir.
+
+    Ayar kilidi yalnızca okuma ve sonucu kaydetme sırasında kısa süre tutulur (Jev beklenirken tutulmaz).
+    Döner: {"onerilen": site, "site_ad", "puan", "olasiliklar"}; sonuç mesaja "jev_onerilen" olarak da kaydedilir.
+    """
+    sohbet_id, sira = g.get("sohbet"), g.get("mesaj_sira")
+    with KILIT:
+        veri = ayarlari_oku()
+    ayarlar = veri["ayarlar"]
+    if ayarlar.get("jev_yanit_puanla") is not True:
+        raise IsHatasi("Yanıt puanlama kapalı (Ayarlar → Jev).")
+    if ayarlar.get("jev_acik", True) is False:
+        raise IsHatasi("Jev kapalı (Ayarlar → Jev).")
+    sohbet = next((s for s in veri["sohbetler"] if s.get("id") == sohbet_id), None)
+    if not sohbet or not isinstance(sira, int) or isinstance(sira, bool) or not 0 <= sira < len(sohbet["mesajlar"]):
+        raise IsHatasi("Sohbet ya da mesaj bulunamadı.")
+    mesaj = sohbet["mesajlar"][sira]
+    kayitli = mesaj.get("yanitlar") if isinstance(mesaj.get("yanitlar"), dict) else {}
+    yanitlar = {sid: kayitli[sid] for sid in siteler.SITELER if isinstance(kayitli.get(sid), str) and kayitli[sid].strip()}
+    if len(yanitlar) < 2:
+        raise IsHatasi("Puanlamak için en az iki site yanıtı gerekli.")
+    try:
+        s = jev.sinifla(_puanlama_metni(mesaj.get("metin", ""), yanitlar),
+                        {sid: f"The answer labelled [{sid}] is the best answer to the question "
+                              "(most correct, complete and helpful)." for sid in yanitlar},
+                        baglam="Pick the single best answer among the labelled answers to the question.")
+    except jev.JevHatasi as h:
+        raise IsHatasi(f"Yanıtlar puanlanamadı: {h}") from None
+    with KILIT:  # sonucu kaydet (arada sohbet silindiyse sessizce atla)
+        veri = ayarlari_oku()
+        sohbet = next((x for x in veri["sohbetler"] if x.get("id") == sohbet_id), None)
+        if sohbet and sira < len(sohbet["mesajlar"]):
+            sohbet["mesajlar"][sira]["jev_onerilen"] = {"site": s["secim"], "puan": round(s["puan"], 3)}
+            ayarlari_yaz(veri)
+    return {"onerilen": s["secim"], "site_ad": siteler.SITELER[s["secim"]]["ad"], "puan": s["puan"],
+            "olasiliklar": s["olasiliklar"]}
+
+
+def oneri_olustur(metin):
+    """/api/oneri: metni sınıflandırır, tercih sırasındaki her öneriye canlı menüden eşleşen model adını ekler.
+
+    Jev açık ve hazırsa tür ve zorluk Jev'le bulunur (kaynak "jev"); kapalı/hata → kural tabanlı (kaynak "kural").
+    Döner: yonlendirici.oner() sonucu + her öneride "model" (eşleşen gerçek ad ya da None) ve eşleşme
+    yoksa "model_notu" (Türkçe sebep). Menü okunamazsa yalnızca site önerilir.
+    """
+    if not isinstance(metin, str) or not metin.strip():
+        raise IsHatasi("Mesaj boş.")
+    kurallar, uyarilar = yonlendirici.kurallari_yukle()
+    # Yazarken otomatik çağrılır: metin hassas bilgi içeriyorsa onay alınmadan Jev'e gitmesin, kural tabanlı kalsın.
+    sinif = None
+    if hassas.tara(metin)["kategori"] == "yok":
+        sinif = jev_ile_siniflandir(metin, ayarlari_oku()["ayarlar"])  # ayar dosyası yalnızca okunur
+    sonuc = yonlendirici.oner(metin, kurallar, sinif=sinif, kaynak="jev")
+    kimlikler = sorted({o["site"] for o in sonuc["oneriler"]})
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(kimlikler))) as havuz:
+        listeler = dict(zip(kimlikler, havuz.map(site_modelleri, kimlikler)))
+    for o in sonuc["oneriler"]:
+        liste = listeler[o["site"]]
+        o["model"] = yonlendirici.model_esles(liste["modeller"], o["model_icerir"])
+        if o["model"] is None:
+            o["model_notu"] = liste["sebep"] or f"Menüde \"{o['model_icerir']}\" içeren model bulunamadı"
+    sonuc["uyarilar"] = uyarilar
+    _SON_SINIFLANDIRMA.clear()
+    _SON_SINIFLANDIRMA.update(tur=sonuc["tur"], tur_ad=sonuc["tur_ad"], zorluk=sonuc["zorluk"],
+                              zorluk_ad=sonuc["zorluk_ad"], kaynak=sonuc["kaynak"],
+                              zaman=datetime.now().strftime("%H:%M:%S"))
+    return sonuc
+
+
+def yonlendirme_durumu():
+    """/api/yonlendirme: Ayarlar → Yönlendirme sekmesi için salt okunur tablo, dosya yolu ve son sınıflandırma."""
+    kurallar, uyarilar = yonlendirici.kurallari_yukle()
+    return {"dosya": str(yonlendirici.YONLENDIRME_DOSYASI), "tablo": yonlendirici.tablo(kurallar),
+            "uyarilar": uyarilar, "son": dict(_SON_SINIFLANDIRMA) or None}
+
+
+def yonlendirme_dosyasini_ac():
+    """yonlendirme.json'u varsayılan düzenleyicide açar (yol sabittir, istekten alınmaz)."""
+    yol = yonlendirici.YONLENDIRME_DOSYASI
+    if not yol.is_file():
+        raise IsHatasi(f"{yol.name} bulunamadı: {yol}")
+    ac = getattr(os, "startfile", None)
+    if ac is None:
+        raise IsHatasi(f"Dosya otomatik açılamadı; elle açın: {yol}")
+    try:
+        ac(str(yol))
+    except OSError as h:
+        raise IsHatasi(f"Dosya açılamadı ({h}); elle açın: {yol}") from h
+    return {"tamam": True, "dosya": str(yol)}
+
+
+def _model_sec_dogrula(ham):
+    """İstekteki `model_sec` ({"site", "model"}) şemasını denetler; yoksa None, geçersizse IsHatasi."""
+    if ham is None:
+        return None
+    if (not isinstance(ham, dict) or ham.get("site") not in siteler.SITELER
+            or not isinstance(ham.get("model"), str) or not 0 < len(ham["model"].strip()) <= 120):
+        raise IsHatasi("Geçersiz model seçimi.")
+    return {"site": ham["site"], "model": ham["model"].strip()}
+
+
+def _model_sec(b, site_id, model):
+    """Sitenin model menüsünden `model`i seçer. Döner: None (seçildi) ya da sorunun Türkçe sebebi.
+
+    Seçilemezse gönderim engellenmez: mesaj mevcut modelle gider ve çağıran "model seçilemedi: <sebep>" ekler.
+    """
+    try:
+        parca = siteler.js_parca(site_id, "model_sec", hedef_model=model)
+    except (ValueError, KeyError):
+        return MODEL_DESTEGI_YOK
+    try:
+        sonuc = b.degerlendir(parca, zaman=MODEL_ZAMAN_ASIMI)
+    except cdp.CdpHatasi as h:
+        return str(h)
+    hata = _js_hatasi(sonuc)
+    if hata:
+        return hata
+    if not isinstance(sonuc, dict):
+        return "Sayfadan beklenmeyen yanıt geldi"
+    if sonuc.get("tamam"):
+        return None
+    return str(sonuc.get("sebep") or "bilinmeyen sebep")[:200]
+
+
 # ---------------------------------------------------------------- doğrulamalar
 
 def _uzak_surucu_mu(yol):
@@ -658,17 +967,19 @@ def _hedefe_git(b, hedef):
         time.sleep(0.3)
 
 
-def siteye_gonder(site_id, metin, enter, sohbet_url=None, site_adresi=None):
+def siteye_gonder(site_id, metin, enter, sohbet_url=None, site_adresi=None, model=None):
     """Mesajı sitenin yazı kutusuna CDP ile ekler ve gönderir.
 
     sohbet_url: arayüzde açık olan site sohbeti; site_adresi: ortak sohbette bu site için kaydedilmiş adres.
-    Döner: {"taban": gönderme anındaki asistan mesajı sayısı, "yeni_pencere": bool}. Sorunda SiteHatasi.
+    model: verilirse yazmadan önce sitenin model menüsünden seçilir (seçilemezse mevcut modelle gönderilir).
+    Döner: {"taban": gönderme anındaki asistan mesajı sayısı, "yeni_pencere": bool}; model verildiyse ayrıca
+    "model_uyarisi" (seçilemediyse Türkçe sebep, seçildiyse None). Sorunda SiteHatasi.
     """
     with _SITE_KILITLERI[site_id]:
-        return _siteye_gonder(site_id, metin, enter, sohbet_url, site_adresi)
+        return _siteye_gonder(site_id, metin, enter, sohbet_url, site_adresi, model)
 
 
-def _siteye_gonder(site_id, metin, enter, sohbet_url, site_adresi):
+def _siteye_gonder(site_id, metin, enter, sohbet_url, site_adresi, model=None):
     kayit = siteler.site(site_id)
     js = kayit["js"]
     hedef = _hedef_adres(site_id, kayit, sohbet_url, site_adresi)  # pencereye dokunmadan önce
@@ -689,6 +1000,10 @@ def _siteye_gonder(site_id, metin, enter, sohbet_url, site_adresi):
         _giris_denetle(b, js, 10 if yeni_pencere else 3)
         gezildi = _hedefe_git(b, hedef)
         _kutuyu_hazirla(b, js, 12 if (yeni_pencere or gezildi) else 4)
+        model_uyarisi = None
+        if model:  # model seçimi yazmadan önce; menü kapanınca yazı kutusu yeniden odaklansın
+            model_uyarisi = _model_sec(b, site_id, model)
+            _kutuyu_hazirla(b, js, 4)
         try:
             taban = sum(1 for x in _mesajlari_oku(b, js)["mesajlar"] if x.get("rol") == "asistan")
         except SiteHatasi:
@@ -718,17 +1033,22 @@ def _siteye_gonder(site_id, metin, enter, sohbet_url, site_adresi):
                     b.tus("Enter", "Enter", 13, "\r")
                 else:
                     raise SiteHatasi(sonuc.get("sebep") or "gönderilemedi")
-        return {"taban": taban, "yeni_pencere": yeni_pencere}
+        sonuc_ = {"taban": taban, "yeni_pencere": yeni_pencere}
+        if model:
+            sonuc_["model_uyarisi"] = model_uyarisi
+        return sonuc_
     except cdp.CdpHatasi as h:
         raise SiteHatasi(str(h)) from h
     finally:
         b.kapat()
 
 
-def gonder(veri, metin, site_idleri, program_idleri, enter, sohbet_url=None, site_adresleri=None):
+def gonder(veri, metin, site_idleri, program_idleri, enter, sohbet_url=None, site_adresleri=None, model_sec=None):
     """Mesajı seçili sitelere (CDP) ve masaüstü programlarına (pano + tuş) gönderir.
 
     site_adresleri: ortak sohbette site kimliği -> o sitenin bu sohbete ait adresi (yoksa yeni sohbet açılır).
+    model_sec: {"site", "model"}; yalnızca o siteye gönderilirken yazmadan önce model seçilir. Seçilemezse
+    mesaj mevcut modelle gider ve sorunlara "model seçilemedi: <sebep>" eklenir.
 
     Döner: (gönderilen adlar, sorunlar, yanıt bekleyen siteler, uygulama penceresi öne getirilsin mi)
     """
@@ -736,7 +1056,8 @@ def gonder(veri, metin, site_idleri, program_idleri, enter, sohbet_url=None, sit
     isler = {}
     havuz = concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(site_idleri)))
     for sid in site_idleri:
-        isler[sid] = havuz.submit(siteye_gonder, sid, metin, enter, sohbet_url, (site_adresleri or {}).get(sid))
+        model = [model_sec["model"]] if model_sec and model_sec.get("site") == sid else []
+        isler[sid] = havuz.submit(siteye_gonder, sid, metin, enter, sohbet_url, (site_adresleri or {}).get(sid), *model)
     program_sonuclari = []
     if program_idleri:
         acik = pc.pencereleri_listele()
@@ -779,6 +1100,8 @@ def gonder(veri, metin, site_idleri, program_idleri, enter, sohbet_url=None, sit
             sorunlar.append({"ad": ad, "sebep": guvenlik.beklenmeyen_hata(f"gonder/{sid}", h)})
             continue
         gonderilen.append(ad)
+        if s.get("model_uyarisi"):
+            sorunlar.append({"ad": ad, "sebep": f"model seçilemedi: {s['model_uyarisi']}"})
         one_getir = one_getir or s["yeni_pencere"]
         if enter:
             bekleyen.append({"site": sid, "ad": ad, "renk": siteler.site(sid)["renk"], "taban": s["taban"]})
@@ -807,8 +1130,11 @@ def ogret(veri, uid):
     return konum
 
 
-def sohbete_ekle(veri, sohbet_id, metin, gonderilen, sorunlar):
-    """Mesajı yerel sohbet geçmişine ekler; (sohbet kimliği, mesajın sırası) döndürür."""
+def sohbete_ekle(veri, sohbet_id, metin, gonderilen, sorunlar, baglam=None):
+    """Mesajı yerel sohbet geçmişine ekler; (sohbet kimliği, mesajın sırası) döndürür.
+
+    baglam: Hafıza OS'tan eklenen bağlam kaydı; ham mesajdan ayrı alanda ("baglam") saklanır.
+    """
     sohbet = next((s for s in veri["sohbetler"] if s["id"] == sohbet_id), None)
     if not sohbet:
         sohbet = {"id": sohbet_id or datetime.now().strftime("%Y%m%d%H%M%S%f"),
@@ -817,6 +1143,8 @@ def sohbete_ekle(veri, sohbet_id, metin, gonderilen, sorunlar):
         veri["sohbetler"].insert(0, sohbet)
     sohbet["mesajlar"].append({"metin": metin, "zaman": datetime.now().strftime("%H:%M"),
                                "gonderilen": gonderilen, "sorunlar": sorunlar, "yanitlar": {}})
+    if baglam:
+        sohbet["mesajlar"][-1]["baglam"] = baglam
     sohbet["guncelleme"] = datetime.now().isoformat(timespec="minutes")
     return sohbet["id"], len(sohbet["mesajlar"]) - 1
 
@@ -871,6 +1199,14 @@ def yaniti_kaydet(veri, sohbet_id, sira, site_id, metin, site_adresi=None):
         site_adresini_kaydet(sohbet, site_id, site_adresi)
 
 
+def _soru_metni(veri, sohbet_id, sira):
+    """Yerel sohbetteki mesajın ham metni (hafızaya eklenen bağlam hariç); bulunamazsa boş."""
+    sohbet = next((s for s in veri["sohbetler"] if s["id"] == sohbet_id), None)
+    if sohbet and isinstance(sira, int) and 0 <= sira < len(sohbet["mesajlar"]):
+        return sohbet["mesajlar"][sira].get("metin", "")
+    return ""
+
+
 # ---------------------------------------------------------------- HTTP
 
 SAHTE_SITE_DOSYALARI = {"/test/sahte-site.js": "sahte-site.js", "/test/sahte-site.css": "sahte-site.css"}
@@ -921,8 +1257,16 @@ class Isleyici(guvenlik.GuvenlikKarisimi, BaseHTTPRequestHandler):
         try:
             if yol == "/api/kimlik":  # belirteçsiz: port meşgulse çalışan örneğin bizim uygulamamız olduğunu doğrulamak için
                 return self._json(guvenlik.KIMLIK)
+            if yol == "/api/hafiza-durum":
+                return self._json(hafiza_kopru.durum())
+            if yol == "/api/jev-durum":  # anahtar dosyası bulundu mu, model, son çağrı (anahtar değeri yok)
+                return self._json(jev_durumu())
             if yol == "/api/durum":
                 return self._json(durum(ayarlari_oku()))
+            if yol == "/api/modeller":
+                return self._json(site_modelleri(sorgu.get("site", [""])[0], sorgu.get("yenile", [""])[0] in ("1", "true")))
+            if yol == "/api/yonlendirme":
+                return self._json(yonlendirme_durumu())
             if yol == "/api/site-sohbetler":
                 return self._json(site_sohbetleri(yenile=sorgu.get("yenile", [""])[0] in ("1", "true")))
             if yol == "/api/yanit":
@@ -972,9 +1316,11 @@ class Isleyici(guvenlik.GuvenlikKarisimi, BaseHTTPRequestHandler):
                 return self._json(self._site_islemi(yol, g))
             # Yanıt kaydedilirken sitenin o anki sohbet adresi kilit dışında okunur (tarayıcı beklemesi kilidi tutmasın).
             site_adresi = site_konumu(str(g.get("site") or "")) if yol == "/api/yanit-kaydet" else None
+            # Hassas bilgi için Jev'in ikinci görüşü de kilit dışında alınır (en çok jev.ZAMAN_ASIMI sn).
+            jev_hassas = self._jev_hassas_on_tarama(g) if yol == "/api/gonder" else None
             with KILIT:
                 veri = ayarlari_oku()
-                sonuc = self._islem(yol, g, veri, site_adresi)
+                sonuc = self._islem(yol, g, veri, site_adresi, jev_hassas)
                 ayarlari_yaz(veri)
             return self._json(sonuc)
         except (IsHatasi, pc.PencereHatasi) as h:
@@ -992,9 +1338,26 @@ class Isleyici(guvenlik.GuvenlikKarisimi, BaseHTTPRequestHandler):
             if uyari:
                 raise IsHatasi(uyari)
             return {"tamam": True}
+        if yol == "/api/oneri":  # kural tabanlı sınıflandırma + canlı menüden model eşleştirme (ayar dosyasına dokunmaz)
+            return oneri_olustur(g.get("metin"))
+        if yol == "/api/yonlendirme-ac":
+            return yonlendirme_dosyasini_ac()
+        if yol == "/api/yanit-puanla":  # ortak sohbette bütün site yanıtları bitince (ayar: jev_yanit_puanla)
+            return yanit_puanla(g)
         raise IsHatasi("Bilinmeyen istek.")
 
-    def _islem(self, yol, g, veri, site_adresi=None):
+    @staticmethod
+    def _jev_hassas_on_tarama(g):
+        """/api/gonder için: uyarı açık, onaysız, metin dolu ve yerel tarama temizse Jev'e sorar; yoksa None."""
+        metin = g.get("metin")
+        if not isinstance(metin, str) or not metin.strip() or g.get("onayli") is True:
+            return None
+        ayarlar = ayarlari_oku()["ayarlar"]
+        if not ayarlar.get("hassas_uyari", True) or hassas.tara(metin.strip())["kategori"] != "yok":
+            return None
+        return jev_hassas_tara(metin.strip(), ayarlar)
+
+    def _islem(self, yol, g, veri, site_adresi=None, jev_hassas=None):
         if yol == "/api/ayar":
             _ayar_dogrula(g, veri)
             for k in VARSAYILAN_AYARLAR:
@@ -1037,6 +1400,15 @@ class Isleyici(guvenlik.GuvenlikKarisimi, BaseHTTPRequestHandler):
             program_idleri = [u["id"] for u in uygulamalar(veri) if program_secili(veri, u["id"])]
             if not site_idleri and not program_idleri:
                 raise IsHatasi("En az bir hesap ya da program seçin.")
+            model_sec = _model_sec_dogrula(g.get("model_sec"))
+            if veri["ayarlar"].get("hassas_uyari", True) and g.get("onayli") is not True:
+                tarama = hassas.tara(metin)  # gönderilmeden önce; onay gerekiyorsa hiçbir yere yazılmaz/gönderilmez
+                if tarama["kategori"] != "yok":
+                    return {"onay_gerekli": True, "kategori": tarama["kategori"], "aciklama": hassas.uyari_metni(tarama),
+                            "eslesme_sayisi": tarama["eslesme_sayisi"], "kaynak": "kural"}
+                if jev_hassas:  # yerel kurallar temiz, Jev (olasılık ≥ JEV_HASSAS_ESIGI) bir sır görüyor
+                    return {"onay_gerekli": True, **jev_hassas}
+            gonder_ek = {"model_sec": model_sec} if model_sec and model_sec["site"] in site_idleri else {}
             sohbet_url = (g.get("sohbet_url") or "").strip() or None
             site_adresleri = {}
             if not sohbet_url and g.get("sohbet"):  # ortak sohbet: her site o sohbete ait kendi adresine gider
@@ -1046,8 +1418,11 @@ class Isleyici(guvenlik.GuvenlikKarisimi, BaseHTTPRequestHandler):
             if not is_kilidi.acquire(blocking=False):
                 raise IsHatasi("Önceki gönderme hâlâ sürüyor.")
             try:
+                # Hafıza OS bağlamı (hafiza_kopru.py): boşsa hiçbir şey eklenmez; hata mesajı engellemez.
+                gonderilecek, baglam = hafiza_kopru.baglam_ekle(metin) if veri["ayarlar"].get("hafiza_ekle", True) else (metin, None)
                 gonderilen, sorunlar, bekleyen, one_getir = gonder(
-                    veri, metin, site_idleri, program_idleri, veri["ayarlar"]["enter_bas"], sohbet_url, site_adresleri)
+                    veri, gonderilecek, site_idleri, program_idleri, veri["ayarlar"]["enter_bas"], sohbet_url, site_adresleri,
+                    **gonder_ek)
             finally:
                 is_kilidi.release()
             if one_getir:  # masaüstü programlarına tıklandı ya da yeni site penceresi açıldı: uygulamaya dön
@@ -1056,11 +1431,13 @@ class Isleyici(guvenlik.GuvenlikKarisimi, BaseHTTPRequestHandler):
                     pc.one_getir(ben.hwnd)
             sid = sira = None
             if not sohbet_url:  # bir site sohbetine yazılıyorsa yerel geçmişe eklenmez
-                sid, sira = sohbete_ekle(veri, g.get("sohbet"), metin, gonderilen, sorunlar)
+                sid, sira = sohbete_ekle(veri, g.get("sohbet"), metin, gonderilen, sorunlar, baglam)
             return {"gonderilen": gonderilen, "sorunlar": sorunlar, "sohbet": sid, "mesaj_sira": sira,
-                    "yanit_bekleyen": bekleyen, "sohbetler": veri["sohbetler"]}
+                    "yanit_bekleyen": bekleyen, "sohbetler": veri["sohbetler"], "baglam": baglam}
         if yol == "/api/yanit-kaydet":
             yaniti_kaydet(veri, g.get("sohbet"), g.get("mesaj_sira"), g.get("site"), g.get("metin"), site_adresi)
+            if veri["ayarlar"].get("hafiza_aday", True):  # Hafıza OS gelen kutusuna aday kayıt (yalnızca ekleme)
+                hafiza_kopru.aday_yaz(g.get("site"), _soru_metni(veri, g.get("sohbet"), g.get("mesaj_sira")), g.get("metin"))
             return {"tamam": True}
         if yol == "/api/ogret":
             if not is_kilidi.acquire(blocking=False):

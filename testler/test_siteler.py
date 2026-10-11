@@ -1,5 +1,6 @@
 """siteler.py için testler: gerçek siteye bağlanmaz, DOM çalıştırmaz."""
 import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -177,6 +178,106 @@ class SikilastirmaTesti(unittest.TestCase):
         # Yalnızca okuma: genel mesaj yedeği duruyor (tıklama/yazma içermez).
         self.assertIn("genelMesajlar", siteler.SITELER["claude"]["js"]["mesajlar"])
         self.assertNotIn(".click()", govde(siteler.SITELER["claude"]["js"]["mesajlar"]))
+
+
+class ModelMenusuJsTesti(unittest.TestCase):
+    """model_listesi / model_sec: yeni anahtarlar, hedef_model ayarı ve güvenlik denetimleri (DOM çalıştırmaz)."""
+
+    ROLLER = ('[role="menuitem"]', '[role="option"]', '[role="menuitemradio"]')
+
+    def test_anahtarlar_var_ve_sarili(self):
+        for anahtar in ("model_listesi", "model_sec"):
+            self.assertIn(anahtar, siteler.JS_ANAHTARLARI)
+            for kimlik, kayit in siteler.SITELER.items():
+                with self.subTest(site=kimlik, anahtar=anahtar):
+                    parca = kayit["js"][anahtar]
+                    self.assertTrue(parca.startswith("(async () =>"))
+                    self.assertTrue(parca.endswith("})()"))
+                    self.assertIn("catch (hata)", parca)
+                    self.assertIn('{ hata: String(', parca)
+                    self.assertIsNone(siteler._dengeli_mi(parca))
+
+    def test_secici_ayarlari(self):
+        for kimlik, ayar in siteler._AYARLAR.items():
+            with self.subTest(site=kimlik):
+                self.assertTrue(2 <= len(ayar["model_dugmesi"]) <= 4, ayar["model_dugmesi"])
+                for rol in self.ROLLER:
+                    self.assertIn(rol, ayar["model_ogeleri"])
+                self.assertIsInstance(ayar["model_alt_menu"], str)
+        self.assertEqual(siteler._AYARLAR["chatgpt"]["model_dugmesi"][0],
+                         'button[data-testid="model-switcher-dropdown-button"]')
+        self.assertEqual(siteler._AYARLAR["claude"]["model_dugmesi"][0],
+                         'button[data-testid="model-selector-dropdown"]')
+        self.assertEqual(siteler._AYARLAR["gemini"]["model_dugmesi"][0],
+                         'button[data-test-id="bard-mode-menu-button"]')
+
+    def test_alt_menu_deseni_calisir(self):
+        import re
+        for kimlik, ayar in siteler._AYARLAR.items():
+            desen = re.compile(ayar["model_alt_menu"], re.I)
+            for metin in ("Diğer modeller", "Other models", "Legacy models", "Daha fazla", "More models"):
+                self.assertTrue(desen.search(metin), (kimlik, metin))
+            for metin in ("GPT-5 mini", "Claude Sonnet", "Gemini Flash"):
+                self.assertFalse(desen.search(metin), (kimlik, metin))
+
+    def test_hedef_model_varsayilan_bos_ve_js_parca_ile_verilir(self):
+        for kimlik, kayit in siteler.SITELER.items():
+            self.assertIn('"hedef_model": ""', kayit["js"]["model_sec"], kimlik)
+            ozel = siteler.js_parca(kimlik, "model_sec", hedef_model="GPT-5 mini")
+            self.assertIn('"hedef_model": "GPT-5 mini"', ozel, kimlik)
+            self.assertEqual(ozel.replace('"hedef_model": "GPT-5 mini"', '"hedef_model": ""'),
+                             kayit["js"]["model_sec"], kimlik)  # başka hiçbir fark yok
+            self.assertIsNone(siteler._dengeli_mi(ozel))
+        self.assertEqual(siteler.js_parca("claude", "model_listesi"), siteler.SITELER["claude"]["js"]["model_listesi"])
+
+    def test_hedef_model_ozel_karakterler_guvenle_gomulur(self):
+        tuhaf = "a\"b\\c\n</script>\u0130'; x\u2028"
+        parca = siteler.js_parca("chatgpt", "model_sec", hedef_model=tuhaf)
+        self.assertIn(json.dumps(tuhaf, ensure_ascii=True), parca)  # ensure_ascii: satır sonları ve ayırıcılar kaçışlı gömülür
+        self.assertIsNone(siteler._dengeli_mi(parca))
+        node = node_bul()
+        if node:
+            with tempfile.TemporaryDirectory() as klasor:
+                dosya = Path(klasor) / "tuhaf.js"
+                dosya.write_text(parca, "utf-8")
+                sonuc = subprocess.run([node, "--check", str(dosya)], capture_output=True, text=True)
+                self.assertEqual(sonuc.returncode, 0, sonuc.stderr)
+
+    def test_hedef_model_metin_olmali(self):
+        with self.assertRaises(ValueError):
+            siteler.js_parca("chatgpt", "model_sec", hedef_model=5)
+        with self.assertRaises(ValueError):
+            siteler.js_parca("chatgpt", "model_sec", hedef_model=None)
+
+    def test_menu_kapatma_ve_tiklama_guvenligi(self):
+        for kimlik, kayit in siteler.SITELER.items():
+            for anahtar in ("model_listesi", "model_sec"):
+                with self.subTest(site=kimlik, anahtar=anahtar):
+                    kod = govde(kayit["js"][anahtar])
+                    self.assertIn("menuKapat(", kod)       # menü her durumda (finally) kapatılır
+                    self.assertIn("finally", kod)
+                    self.assertIn('"Escape"', kod)         # Escape ile kapatma
+                    self.assertIn("tikla(document.body)", kod)  # yedek: dışarı tıklama
+                    self.assertIn("AYAR.model_dugmesi", kod)
+                    self.assertIn("AYAR.model_ogeleri", kod)
+                    self.assertNotIn("document.cookie", kod)
+                    self.assertNotIn("localStorage", kod)
+                    self.assertNotIn("sessionStorage", kod)
+
+    def test_model_sec_yalniz_hedefle_calisir(self):
+        kod = govde(siteler.SITELER["chatgpt"]["js"]["model_sec"])
+        self.assertIn("hedef model verilmedi", kod)
+        self.assertIn("belirsiz, birden çok aday", kod)  # birden çok aday: tıklanmaz
+        self.assertIn("menü düğmesindeki metin değişmedi", kod)  # doğrulama
+        self.assertIn("bekle(500)", kod)
+        # model_listesi hiçbir model öğesine tıklamaz: tek tıklama hedefleri menü düğmesi, alt menü tetikleyicileri ve dışarı
+        liste = govde(siteler.SITELER["chatgpt"]["js"]["model_listesi"])
+        self.assertNotIn("tikla(aday", liste)
+        self.assertNotIn("hedef_model", liste)
+
+    def test_ilk_model_listesi_mesaji(self):
+        self.assertIn("model menüsü bulunamadı", siteler.SITELER["gemini"]["js"]["model_listesi"])
+        self.assertIn("model menüsü bulunamadı", siteler.SITELER["claude"]["js"]["model_sec"])
 
 
 class SohbetKimligiTesti(unittest.TestCase):

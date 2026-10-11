@@ -56,3 +56,52 @@
     geriDurum.dataset.metin = document.getElementById("geri-bildirim-metin").value;
     geriDurum.textContent = "Gönderildi (" + n + ")";
   });
+
+  // Model seçici (ChatGPT benzeri): düğme tıklanınca role=menu içinde üç menuitem açılır; birine tıklanınca düğme
+  // metni değişir ve menü kapanır; Escape ya da menü dışına tıklama da kapatır.
+  const modelDugmesi = document.getElementById("model-dugmesi");
+  modelDugmesi.style.width = "auto";  // sayfa stili (CSP) tüm düğmeleri yuvarlak yapar; CSSOM ile ezilir
+  modelDugmesi.style.borderRadius = "8px";
+  modelDugmesi.style.padding = "0 12px";
+  const MODELLER = ["GPT-5 Deneme", "GPT-5 mini", "o-deneme"];
+  let modelMenusu = null;
+
+  function modelMenusunuKapat() {
+    if (modelMenusu) { modelMenusu.remove(); modelMenusu = null; }
+    modelDugmesi.setAttribute("aria-expanded", "false");
+  }
+
+  function modelMenusunuAc() {
+    modelMenusu = document.createElement("div");
+    modelMenusu.setAttribute("role", "menu");
+    modelMenusu.style.position = "absolute";
+    modelMenusu.style.top = "44px";
+    modelMenusu.style.left = "240px";
+    modelMenusu.style.background = "#fff";
+    modelMenusu.style.border = "1px solid #ccc";
+    modelMenusu.style.padding = "4px";
+    modelMenusu.style.zIndex = "10";
+    const secili = modelDugmesi.textContent.trim();
+    MODELLER.forEach((ad) => {
+      const oge = document.createElement("div");
+      oge.setAttribute("role", "menuitem");
+      oge.setAttribute("tabindex", "-1");
+      oge.setAttribute("aria-checked", ad === secili ? "true" : "false");
+      oge.style.padding = "6px 10px";
+      oge.style.cursor = "pointer";
+      oge.textContent = ad;
+      oge.addEventListener("click", () => {
+        modelDugmesi.textContent = ad;
+        modelMenusunuKapat();
+      });
+      modelMenusu.appendChild(oge);
+    });
+    document.body.appendChild(modelMenusu);
+    modelDugmesi.setAttribute("aria-expanded", "true");
+  }
+
+  modelDugmesi.addEventListener("click", () => { if (modelMenusu) { modelMenusunuKapat(); } else { modelMenusunuAc(); } });
+  document.addEventListener("keydown", (o) => { if (o.key === "Escape" && modelMenusu) { modelMenusunuKapat(); } });
+  document.addEventListener("pointerdown", (o) => {
+    if (modelMenusu && !modelMenusu.contains(o.target) && o.target !== modelDugmesi) { modelMenusunuKapat(); }
+  });

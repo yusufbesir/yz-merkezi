@@ -1,4 +1,5 @@
 """masaustu_sunucu.py'nin site mantığı için hızlı testler: tarayıcıya ve ekrana dokunmaz (sahte bağlantılarla)."""
+import json
 import sys
 import time
 import unittest
@@ -584,6 +585,712 @@ class SiteKilidiTesti(unittest.TestCase):
             for i in isler:
                 i.join()
         self.assertEqual(cakisma, [])
+
+
+class HttpTabani(unittest.TestCase):
+    """Geçici ayar dosyasıyla gerçek Isleyici'yi rastgele portta çalıştırır (tarayıcıya ve ağa dokunmaz)."""
+
+    def setUp(self):
+        import shutil
+        import tempfile
+        import threading
+        from http.server import ThreadingHTTPServer
+        klasor = Path(tempfile.mkdtemp(prefix="yzyonlendirme_"))
+        self.addCleanup(shutil.rmtree, klasor, True)
+        yama = mock.patch.object(ms, "AYAR_DOSYASI", klasor / "ayar.json")
+        yama.start()
+        self.addCleanup(yama.stop)
+        ms.is_kilidi = threading.Lock()
+        ms._MODEL_ONBELLEGI.clear()
+        ms._SON_SINIFLANDIRMA.clear()
+        self.addCleanup(ms._MODEL_ONBELLEGI.clear)
+        self.addCleanup(ms._SON_SINIFLANDIRMA.clear)
+        self.sunucu = ThreadingHTTPServer(("127.0.0.1", 0), ms.Isleyici)
+        threading.Thread(target=self.sunucu.serve_forever, daemon=True).start()
+        self.addCleanup(self.sunucu.server_close)
+        self.addCleanup(self.sunucu.shutdown)
+
+    def istek(self, yontem, yol, veri=None):
+        """(HTTP kodu, JSON gövde)."""
+        import json
+        import urllib.error
+        import urllib.request
+        govde = json.dumps(veri).encode() if veri is not None else None
+        talep = urllib.request.Request(f"http://127.0.0.1:{self.sunucu.server_port}{yol}", govde, method=yontem,
+                                       headers={"Content-Type": "application/json", "X-YZ-Token": ms.BELIRTEC})
+        acici = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        try:
+            with acici.open(talep, timeout=10) as y:
+                return y.status, json.load(y)
+        except urllib.error.HTTPError as h:
+            return h.code, json.loads(h.read().decode("utf-8"))
+
+    def post(self, yol, veri):
+        return self.istek("POST", yol, veri)
+
+    def get(self, yol):
+        return self.istek("GET", yol)
+
+
+HAFIZASIZ = {"hafiza_ekle": False, "hafiza_aday": False}  # bu testler Hafıza OS kasasına dokunmasın
+
+MODEL_LISTELERI = {
+    "gemini": {"modeller": [{"id": "g1", "ad": "Gemini 3 Flash", "secili": True},
+                            {"id": "g2", "ad": "Gemini 3 Pro", "secili": False}], "sebep": ""},
+    "chatgpt": {"modeller": [{"id": "c1", "ad": "GPT-5 mini", "secili": False}], "sebep": ""},
+    "claude": {"modeller": [], "sebep": "Claude penceresi kapalı"},
+}
+
+
+class OneriHttpTesti(HttpTabani):
+    """/api/oneri, /api/modeller ve /api/yonlendirme."""
+
+    def sahte_modeller(self, site_id, yenile=False):
+        return {"site": site_id, **MODEL_LISTELERI[site_id]}
+
+    def test_oneri_siniflandirir_ve_model_eslestirir(self):
+        with mock.patch.object(ms, "site_modelleri", self.sahte_modeller):
+            kod, v = self.post("/api/oneri", {"metin": "Bu makaleyi özetle"})
+        self.assertEqual(kod, 200)
+        self.assertEqual((v["tur"], v["zorluk"], v["kaynak"]), ("ozet", "basit", "kural"))
+        o = v["oneriler"]
+        self.assertEqual([x["site"] for x in o], ["gemini", "chatgpt", "claude"])
+        self.assertEqual(o[0]["model"], "Gemini 3 Flash")      # "flash" canlı menüden bulundu
+        self.assertEqual(o[1]["model"], "GPT-5 mini")          # "mini"
+        self.assertIsNone(o[2]["model"])                       # menü okunamadı: yalnızca site önerilir
+        self.assertEqual(o[2]["model_notu"], "Claude penceresi kapalı")
+        self.assertIn("sebep", o[0])
+
+    def test_eslesen_model_yoksa_none_ve_not(self):
+        with mock.patch.object(ms, "site_modelleri", self.sahte_modeller):
+            _, v = self.post("/api/oneri", {"metin": "Merhaba nasılsın"})   # sohbet/basit → gemini flash, chatgpt mini, claude haiku
+            self.assertEqual(v["oneriler"][0]["model"], "Gemini 3 Flash")
+            _, v = self.post("/api/oneri", {"metin": "Elektrikli araçları karşılaştır ve kaynak göster. " + "a" * 1300})
+        self.assertEqual((v["tur"], v["zorluk"]), ("arastirma", "zor"))
+        self.assertEqual((v["oneriler"][0]["site"], v["oneriler"][0]["model"]), ("gemini", "Gemini 3 Pro"))
+        claude = next(x for x in v["oneriler"] if x["site"] == "claude")
+        self.assertIsNone(claude["model"])
+        chatgpt = next(x for x in v["oneriler"] if x["site"] == "chatgpt")   # "pro" aranır, menüde yok
+        self.assertIsNone(chatgpt["model"])
+        self.assertIn("pro", chatgpt["model_notu"])
+
+    def test_bos_metin_reddedilir(self):
+        for g in ({"metin": ""}, {"metin": "   "}, {}, {"metin": 5}):
+            with self.subTest(g=g):
+                kod, v = self.post("/api/oneri", g)
+                self.assertEqual(kod, 400)
+                self.assertIn("boş", v["hata"])
+
+    def test_oneri_ayar_dosyasina_dokunmaz(self):
+        with mock.patch.object(ms, "site_modelleri", self.sahte_modeller):
+            self.post("/api/oneri", {"metin": "merhaba dünya"})
+        self.assertFalse(ms.AYAR_DOSYASI.exists())
+
+    def test_son_siniflandirma_yonlendirme_durumunda(self):
+        kod, v = self.get("/api/yonlendirme")
+        self.assertEqual(kod, 200)
+        self.assertIsNone(v["son"])
+        self.assertEqual(len(v["tablo"]), 21)
+        self.assertEqual(v["dosya"], str(ms.yonlendirici.YONLENDIRME_DOSYASI))
+        self.assertEqual(v["uyarilar"], [])
+        with mock.patch.object(ms, "site_modelleri", self.sahte_modeller):
+            self.post("/api/oneri", {"metin": "Python hatasını bul"})
+        _, v = self.get("/api/yonlendirme")
+        self.assertEqual((v["son"]["tur"], v["son"]["zorluk"], v["son"]["tur_ad"]), ("kod", "basit", "kod"))
+        self.assertRegex(v["son"]["zaman"], r"^\d\d:\d\d:\d\d$")
+        self.assertNotIn("Python", json.dumps(v, ensure_ascii=False), "mesaj metni saklanmaz")
+
+    def test_bozuk_kural_dosyasi_yerlesige_duser(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as klasor:
+            dosya = Path(klasor) / "y.json"
+            dosya.write_text("{bozuk", "utf-8")
+            with mock.patch.object(ms.yonlendirici, "YONLENDIRME_DOSYASI", dosya), \
+                    mock.patch.object(ms, "site_modelleri", self.sahte_modeller):
+                kod, v = self.post("/api/oneri", {"metin": "merhaba dünya"})
+                _, d = self.get("/api/yonlendirme")
+        self.assertEqual(kod, 200)
+        self.assertEqual(v["oneriler"][0]["site"], "gemini")
+        self.assertTrue(v["uyarilar"] and d["uyarilar"])
+
+    def test_yonlendirme_dosyasini_ac(self):
+        with mock.patch.object(ms.os, "startfile", create=True) as ac:
+            kod, v = self.post("/api/yonlendirme-ac", {})
+        self.assertEqual(kod, 200)
+        ac.assert_called_once_with(str(ms.yonlendirici.YONLENDIRME_DOSYASI))
+        self.assertEqual(v["dosya"], str(ms.yonlendirici.YONLENDIRME_DOSYASI))
+        with mock.patch.object(ms.yonlendirici, "YONLENDIRME_DOSYASI", Path("yok") / "yok.json"):
+            kod, v = self.post("/api/yonlendirme-ac", {"yol": "C:\\Windows\\sistem.exe"})
+        self.assertEqual(kod, 400)
+        self.assertIn("bulunamadı", v["hata"])
+
+    def test_modeller_ucu(self):
+        with mock.patch.object(ms, "_model_listesi_oku", return_value=MODEL_LISTELERI["gemini"]) as oku:
+            kod, v = self.get("/api/modeller?site=gemini")
+            self.get("/api/modeller?site=gemini")
+        self.assertEqual(kod, 200)
+        self.assertEqual((v["site"], [m["ad"] for m in v["modeller"]]), ("gemini", ["Gemini 3 Flash", "Gemini 3 Pro"]))
+        oku.assert_called_once_with("gemini")            # ikinci istek önbellekten
+        for yol in ("/api/modeller?site=yok", "/api/modeller"):
+            with self.subTest(yol=yol):
+                self.assertEqual(self.get(yol)[0], 400)
+
+    def test_modeller_ucu_belirtecsiz_403(self):
+        import urllib.error
+        import urllib.request
+        acici = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        for yol in ("/api/modeller?site=gemini", "/api/yonlendirme"):
+            with self.subTest(yol=yol), self.assertRaises(urllib.error.HTTPError) as h:
+                acici.open(f"http://127.0.0.1:{self.sunucu.server_port}{yol}", timeout=10)
+            self.assertEqual(h.exception.code, 403)
+
+
+class ModelListesiOkumaTesti(unittest.TestCase):
+    """site_modelleri / _model_listesi_oku: sahte bağlantıyla; sitenin menüsüne gerçekten dokunulmaz."""
+
+    PARCA = "(async () => 'model_listesi')()"
+
+    def setUp(self):
+        ms._MODEL_ONBELLEGI.clear()
+        self.addCleanup(ms._MODEL_ONBELLEGI.clear)
+
+    def kur(self, yanit, giris=None):
+        giris = {"giris": True, "sebep": "x"} if giris is None else giris
+        return SahteBaglanti({"giris_var_mi": giris, self.PARCA: yanit})
+
+    def calistir(self, b, site="chatgpt", parca=None, **kw):
+        with mock.patch.object(ms, "site_sayfasi", return_value=b) as s, \
+                mock.patch.object(ms.siteler, "js_parca", return_value=parca or self.PARCA) as j:
+            sonuc = ms.site_modelleri(site, **kw)
+        return sonuc, s, j
+
+    def test_liste_okunur_temizlenir_ve_onbellege_alinir(self):
+        b = self.kur({"modeller": [{"id": "1", "ad": " GPT-5 ", "secili": True}, {"ad": ""}, "x", {"id": "2", "ad": "GPT-5 mini"}],
+                      "sebep": ""})
+        sonuc, _, j = self.calistir(b)
+        j.assert_called_once_with("chatgpt", "model_listesi")
+        self.assertEqual(sonuc["modeller"], [{"id": "1", "ad": "GPT-5", "secili": True},
+                                             {"id": "2", "ad": "GPT-5 mini", "secili": False}])
+        self.assertTrue(b.kapandi)
+        n = len(b.sorgular)
+        sonuc2, s, _ = self.calistir(b)
+        self.assertEqual(sonuc2, sonuc)
+        s.assert_not_called()                              # 60 sn içinde yeniden sorulmaz
+        self.assertEqual(len(b.sorgular), n)
+        ms._MODEL_ONBELLEGI["chatgpt"]["zaman"] -= ms.MODEL_ONBELLEK_SURESI + 1
+        _, s, _ = self.calistir(b)
+        s.assert_called_once()                             # süre doldu
+        _, s, _ = self.calistir(b, yenile=True)
+        s.assert_called_once()
+
+    def test_menu_destegi_yoksa_sebep(self):
+        for hata in (KeyError("model_listesi"), ValueError("Bilinmeyen ek ayar")):
+            ms._MODEL_ONBELLEGI.clear()
+            with self.subTest(hata=hata), mock.patch.object(ms.siteler, "js_parca", side_effect=hata), \
+                    mock.patch.object(ms, "site_sayfasi") as s:
+                sonuc = ms.site_modelleri("claude")
+            self.assertEqual(sonuc, {"site": "claude", "modeller": [], "sebep": "model menüsü desteği henüz yok"})
+            s.assert_not_called()
+
+    def test_pencere_kapali_giris_yok_ve_hatalar(self):
+        sonuc, _, _ = self.calistir(None)
+        self.assertEqual((sonuc["modeller"], sonuc["sebep"]), ([], "ChatGPT penceresi kapalı"))
+        ms._MODEL_ONBELLEGI.clear()
+        sonuc, _, _ = self.calistir(self.kur({}, giris={"giris": False, "sebep": "x"}))
+        self.assertEqual(sonuc["sebep"], "ChatGPT için giriş yapılmamış")
+        ms._MODEL_ONBELLEGI.clear()
+        sonuc, _, _ = self.calistir(self.kur({"hata": "TypeError: menü yok"}))
+        self.assertIn("TypeError", sonuc["sebep"])
+        ms._MODEL_ONBELLEGI.clear()
+        sonuc, _, _ = self.calistir(self.kur(cdp.CdpHatasi("koptu")))
+        self.assertEqual(sonuc["sebep"], "koptu")
+        ms._MODEL_ONBELLEGI.clear()
+        sonuc, _, _ = self.calistir(self.kur("liste değil"))
+        self.assertIn("beklenmeyen", sonuc["sebep"])
+        ms._MODEL_ONBELLEGI.clear()
+        sonuc, _, _ = self.calistir(self.kur({"modeller": [], "sebep": "Menü açılamadı"}))
+        self.assertEqual((sonuc["modeller"], sonuc["sebep"]), ([], "Menü açılamadı"))
+
+    def test_hata_kisa_onbellege_alinir(self):
+        _, s, _ = self.calistir(None)
+        s.assert_called_once()
+        _, s, _ = self.calistir(None)
+        s.assert_not_called()                              # 10 sn içinde sayfaya yeniden sorulmaz
+        ms._MODEL_ONBELLEGI["chatgpt"]["zaman"] -= ms.MODEL_HATA_ONBELLEK_SURESI + 1
+        _, s, _ = self.calistir(None)
+        s.assert_called_once()
+
+    def test_site_mesgulse_bekleyip_vazgecer(self):
+        kilit = ms._SITE_KILITLERI["chatgpt"]
+        kilit.acquire()
+        self.addCleanup(lambda: kilit.locked() and kilit.release())
+        with mock.patch.object(ms, "MODEL_KILIT_BEKLEME", 0.05), mock.patch.object(ms.siteler, "js_parca", return_value=self.PARCA), \
+                mock.patch.object(ms, "site_sayfasi") as s:
+            sonuc = ms.site_modelleri("chatgpt")
+        self.assertEqual(sonuc["sebep"], "ChatGPT şu an meşgul")
+        s.assert_not_called()
+
+    def test_bilinmeyen_site(self):
+        with self.assertRaises(ms.IsHatasi):
+            ms.site_modelleri("yok")
+
+
+class ModelSecmeTesti(unittest.TestCase):
+    """siteye_gonder / gonder: yazmadan önce model_sec JS'i çağrılır; seçilemezse mevcut modelle gönderilir."""
+
+    MODEL_JS = "(async () => 'model_sec')()"
+
+    def kur(self, model_yaniti, site="chatgpt"):
+        b = mock.MagicMock()
+        self.olaylar = []
+        konum = {"href": siteler.SITELER[site]["yeni_sohbet_adresi"]}
+        b.git.side_effect = lambda url: konum.update(href=url)
+        b.yazi_ekle.side_effect = lambda t: self.olaylar.append("yazi")
+        sjs = siteler.SITELER[site]["js"]
+
+        def degerlendir(js, zaman=30):
+            if js == self.MODEL_JS:
+                self.olaylar.append("model_sec")
+                if isinstance(model_yaniti, Exception):
+                    raise model_yaniti
+                return model_yaniti
+            if js == sjs["kutu_metni"]:
+                return "".join(c.args[0] for c in b.yazi_ekle.call_args_list)
+            if js == "location.href":
+                return konum["href"]
+            if js == sjs["yazi_kutusunu_bul"]:
+                self.olaylar.append("kutu")
+            if js == sjs["gonder"]:
+                self.olaylar.append("gonder")
+            return {
+                sjs["giris_var_mi"]: {"giris": True, "sebep": "x"},
+                sjs["yazi_kutusunu_bul"]: {"tamam": True, "tur": "contenteditable", "sebep": ""},
+                sjs["kutu_hazir_mi"]: {"hazir": True},
+                sjs["mesajlar"]: {"baslik": "", "mesajlar": [{"rol": "asistan", "metin": "a"}]},
+                sjs["gonder"]: {"tamam": True, "yontem": "dugme", "sebep": ""},
+            }[js]
+        b.degerlendir.side_effect = degerlendir
+        return b
+
+    def gonder(self, b, model="Gemini 3 Flash", site="chatgpt", parca=None):
+        def js_parca(site_id, anahtar, **ek):
+            if anahtar != "model_sec":
+                raise AssertionError(anahtar)
+            if parca is not None:
+                raise parca
+            self.cagrilar.append((site_id, ek))
+            return self.MODEL_JS
+        self.cagrilar = []
+        with mock.patch.object(ms, "site_sayfasi", return_value=b), mock.patch.object(ms.time, "sleep"), \
+                mock.patch.object(ms.siteler, "js_parca", side_effect=js_parca):
+            return ms.siteye_gonder(site, "merhaba", True, model=model)
+
+    def test_model_yazmadan_once_secilir(self):
+        b = self.kur({"tamam": True, "secilen": "Gemini 3 Flash", "sebep": ""})
+        s = self.gonder(b)
+        self.assertEqual(self.cagrilar, [("chatgpt", {"hedef_model": "Gemini 3 Flash"})])
+        self.assertIsNone(s["model_uyarisi"])
+        self.assertLess(self.olaylar.index("model_sec"), self.olaylar.index("yazi"))
+        self.assertEqual(self.olaylar[-1], "gonder")
+        self.assertEqual(self.olaylar.count("kutu"), 2, "model menüsünden sonra yazı kutusu yeniden odaklanır")
+        self.assertEqual(self.olaylar.index("kutu"), 0)
+
+    def test_model_verilmezse_model_js_calismaz(self):
+        b = self.kur({"tamam": True})
+        with mock.patch.object(ms, "site_sayfasi", return_value=b), mock.patch.object(ms.time, "sleep"), \
+                mock.patch.object(ms.siteler, "js_parca", side_effect=AssertionError("çağrılmamalı")):
+            s = ms.siteye_gonder("chatgpt", "merhaba", True)
+        self.assertEqual(s, {"taban": 1, "yeni_pencere": False})
+        self.assertNotIn("model_sec", self.olaylar)
+
+    def test_secilemezse_mevcut_modelle_gonderilir(self):
+        b = self.kur({"tamam": False, "secilen": "", "sebep": "menüde Gemini 3 Flash yok"})
+        s = self.gonder(b)
+        self.assertEqual(s["model_uyarisi"], "menüde Gemini 3 Flash yok")
+        self.assertEqual(self.olaylar[-1], "gonder")       # yine de gönderildi
+
+    def test_hata_senaryolari_gonderimi_engellemez(self):
+        for yanit, beklenen in ((cdp.CdpHatasi("koptu"), "koptu"), ({"hata": "TypeError: x"}, "TypeError: x"),
+                                ("garip", "Sayfadan beklenmeyen yanıt geldi"), ({"tamam": False}, "bilinmeyen sebep")):
+            with self.subTest(yanit=str(yanit)):
+                b = self.kur(yanit)
+                s = self.gonder(b)
+                self.assertEqual(s["model_uyarisi"], beklenen)
+                self.assertEqual(self.olaylar[-1], "gonder")
+
+    def test_menu_destegi_henuz_yok(self):
+        for hata in (ValueError("Bilinmeyen ek ayar"), KeyError("model_sec")):
+            with self.subTest(hata=hata):
+                b = self.kur({"tamam": True})
+                s = self.gonder(b, parca=hata)
+                self.assertEqual(s["model_uyarisi"], "model menüsü desteği henüz yok")
+                self.assertNotIn("model_sec", self.olaylar)
+                self.assertEqual(self.olaylar[-1], "gonder")
+
+    def test_gonder_sorunlara_model_secilemedi_ekler(self):
+        veri = {"konumlar": {}, "ek_uygulamalar": []}
+        gelen = []
+
+        def sahte(sid, metin, enter, sohbet_url, site_adresi, *model):
+            gelen.append((sid, model))
+            if sid == "gemini":
+                return {"taban": 0, "yeni_pencere": False, "model_uyarisi": "menü açılamadı"}
+            return {"taban": 0, "yeni_pencere": False}
+        with mock.patch.object(ms, "siteye_gonder", side_effect=sahte):
+            gonderilen, sorunlar, bekleyen, _ = ms.gonder(
+                veri, "m", ["chatgpt", "gemini"], [], True, model_sec={"site": "gemini", "model": "Gemini 3 Flash"})
+        self.assertEqual(sorted(gelen), [("chatgpt", ()), ("gemini", ("Gemini 3 Flash",))])  # yalnızca o siteye
+        self.assertEqual(sorted(gonderilen), ["ChatGPT", "Gemini"])
+        self.assertEqual(sorunlar, [{"ad": "Gemini", "sebep": "model seçilemedi: menü açılamadı"}])
+        self.assertEqual(len(bekleyen), 2)
+
+    def test_model_secilince_sorun_eklenmez(self):
+        with mock.patch.object(ms, "siteye_gonder", return_value={"taban": 0, "yeni_pencere": False, "model_uyarisi": None}):
+            _, sorunlar, _, _ = ms.gonder({"konumlar": {}, "ek_uygulamalar": []}, "m", ["gemini"], [], True,
+                                          model_sec={"site": "gemini", "model": "x"})
+        self.assertEqual(sorunlar, [])
+
+    def test_model_sec_dogrulama(self):
+        self.assertIsNone(ms._model_sec_dogrula(None))
+        self.assertEqual(ms._model_sec_dogrula({"site": "claude", "model": "  Sonnet 5.5 "}), {"site": "claude", "model": "Sonnet 5.5"})
+        for kotu in ({}, {"site": "claude"}, {"site": "yok", "model": "x"}, {"site": "claude", "model": ""},
+                     {"site": "claude", "model": 5}, {"site": "claude", "model": "x" * 121}, "claude", ["claude"], False):
+            with self.subTest(kotu=kotu), self.assertRaises(ms.IsHatasi):
+                ms._model_sec_dogrula(kotu)
+
+
+class HassasVeModelGonderHttpTesti(HttpTabani):
+    """/api/gonder: hassas bilgi onayı (onay_gerekli / onayli) ve model_sec iletimi."""
+
+    def sahte_gonder(self, gelen):
+        def gonder(veri, metin, site_idleri, program_idleri, enter, sohbet_url=None, site_adresleri=None, **ek):
+            gelen.append({"metin": metin, "siteler": list(site_idleri), **ek})
+            return ["ChatGPT"], [], [], False
+        return gonder
+
+    def calistir(self, gelen, govdeler, ayar=None):
+        ms.ayarlari_yaz({"secili": {"site:gemini": False, "site:claude": False}, "ayarlar": {**HAFIZASIZ, **(ayar or {})}})
+        sonuclar = []
+        with mock.patch.object(ms, "gonder", self.sahte_gonder(gelen)), mock.patch.object(ms, "kendi_pencere", return_value=None):
+            for g in govdeler:
+                sonuclar.append(self.post("/api/gonder", g))
+        return sonuclar
+
+    ANAHTAR = "bu anahtarı kullan: sk-" + "abcdefghijklmnop1234567890"
+
+    def test_hassas_metin_onay_ister_ve_gonderilmez(self):
+        gelen = []
+        (kod, v), = self.calistir(gelen, [{"metin": self.ANAHTAR}])
+        self.assertEqual(kod, 200)
+        self.assertEqual((v["onay_gerekli"], v["kategori"], v["aciklama"]), (True, "api_anahtari", "bir API anahtarı"))
+        self.assertEqual(gelen, [], "onay gelmeden hiçbir siteye gönderilmez")
+        self.assertEqual(ms.ayarlari_oku()["sohbetler"], [], "yerel geçmişe de eklenmez")
+        self.assertNotIn("abcdefghijklmnop1234567890", json.dumps(v))
+
+    def test_onayli_true_ile_gonderilir(self):
+        gelen = []
+        (_, v1), (_, v2) = self.calistir(gelen, [{"metin": self.ANAHTAR}, {"metin": self.ANAHTAR, "onayli": True}])
+        self.assertTrue(v1["onay_gerekli"])
+        self.assertNotIn("onay_gerekli", v2)
+        self.assertEqual(v2["gonderilen"], ["ChatGPT"])
+        self.assertEqual(len(gelen), 1)
+        self.assertEqual(len(ms.ayarlari_oku()["sohbetler"]), 1)
+
+    def test_onayli_yalniz_true_sayilir(self):
+        gelen = []
+        sonuclar = self.calistir(gelen, [{"metin": self.ANAHTAR, "onayli": degeri} for degeri in ("true", 1, "evet", None)])
+        self.assertTrue(all(v.get("onay_gerekli") for _, v in sonuclar))
+        self.assertEqual(gelen, [])
+
+    def test_kategoriler(self):
+        ornekler = {"api_anahtari": "sk-" + "a" * 24, "parola": "şifre: Gizli1234", "kimlik": "TC 10000000146",
+                    "finansal": "IBAN TR33 0006 1005 1978 6457 8413 26"}
+        gelen = []
+        sonuclar = self.calistir(gelen, [{"metin": m} for m in ornekler.values()])
+        self.assertEqual([v["kategori"] for _, v in sonuclar], list(ornekler))
+        self.assertEqual([v["aciklama"] for _, v in sonuclar],
+                         ["bir API anahtarı", "bir parola", "bir T.C. kimlik numarası", "bir IBAN ya da kart numarası"])
+
+    def test_temiz_metin_dogrudan_gider(self):
+        gelen = []
+        (_, v), = self.calistir(gelen, [{"metin": "Merhaba, bugün hava nasıl?"}])
+        self.assertEqual(v["gonderilen"], ["ChatGPT"])
+        self.assertEqual(len(gelen), 1)
+
+    def test_ayar_kapaliysa_uyari_yok(self):
+        gelen = []
+        (_, v), = self.calistir(gelen, [{"metin": self.ANAHTAR}], ayar={"hassas_uyari": False})
+        self.assertEqual(v["gonderilen"], ["ChatGPT"])
+        self.assertEqual(len(gelen), 1)
+
+    def test_ayarlar_varsayilan_ve_sema(self):
+        v = ms.ayarlari_oku()["ayarlar"]
+        self.assertIs(v["hassas_uyari"], True)
+        self.assertIs(v["otomatik_yonlendirme"], False)
+        self.assertEqual(self.post("/api/ayar", {"hassas_uyari": False, "otomatik_yonlendirme": True})[0], 200)
+        v = ms.ayarlari_oku()["ayarlar"]
+        self.assertEqual((v["hassas_uyari"], v["otomatik_yonlendirme"]), (False, True))
+        once = ms.AYAR_DOSYASI.read_bytes()
+        for g in ({"hassas_uyari": "evet"}, {"otomatik_yonlendirme": 1}, {"hassas_uyari": None}):
+            with self.subTest(g=g):
+                self.assertEqual(self.post("/api/ayar", g)[0], 400)
+                self.assertEqual(ms.AYAR_DOSYASI.read_bytes(), once)
+
+    def test_model_sec_gonder_e_iletilir(self):
+        gelen = []
+        self.calistir(gelen, [{"metin": "merhaba", "model_sec": {"site": "chatgpt", "model": "GPT-5 mini"}}])
+        self.assertEqual(gelen[0]["model_sec"], {"site": "chatgpt", "model": "GPT-5 mini"})
+
+    def test_model_sec_yoksa_ek_arguman_yok(self):
+        gelen = []
+        self.calistir(gelen, [{"metin": "merhaba"}])
+        self.assertNotIn("model_sec", gelen[0])
+
+    def test_secili_olmayan_site_icin_model_sec_yok_sayilir(self):
+        gelen = []
+        self.calistir(gelen, [{"metin": "merhaba", "model_sec": {"site": "gemini", "model": "Gemini 3 Flash"}}])
+        self.assertNotIn("model_sec", gelen[0])
+
+    def test_gecersiz_model_sec_400(self):
+        gelen = []
+        sonuclar = self.calistir(gelen, [{"metin": "merhaba", "model_sec": kotu}
+                                         for kotu in ({"site": "yok", "model": "x"}, {"site": "chatgpt"}, "chatgpt", [])])
+        self.assertTrue(all(kod == 400 and "model seçimi" in v["hata"] for kod, v in sonuclar))
+        self.assertEqual(gelen, [])
+
+    def test_model_sec_uctan_uca_sahte_baglantiyla(self):
+        """/api/gonder → gonder → siteye_gonder → sayfa JS'i: model seçimi yazmadan önce, sorun listesine düşer."""
+        b = mock.MagicMock()
+        sjs = siteler.SITELER["chatgpt"]["js"]
+        olaylar = []
+        b.yazi_ekle.side_effect = lambda t: olaylar.append("yazi")
+
+        def degerlendir(js, zaman=30):
+            if js == "JS_MODEL_SEC":
+                olaylar.append("model_sec")
+                return {"tamam": False, "secilen": "", "sebep": "menüde bulunamadı"}
+            if js == "location.href":
+                return siteler.SITELER["chatgpt"]["yeni_sohbet_adresi"]
+            if js == sjs["kutu_metni"]:
+                return "merhaba"
+            return {sjs["giris_var_mi"]: {"giris": True, "sebep": "x"},
+                    sjs["yazi_kutusunu_bul"]: {"tamam": True, "tur": "contenteditable", "sebep": ""},
+                    sjs["kutu_hazir_mi"]: {"hazir": True},
+                    sjs["mesajlar"]: {"baslik": "", "mesajlar": []},
+                    sjs["gonder"]: {"tamam": True, "yontem": "dugme", "sebep": ""}}[js]
+        b.degerlendir.side_effect = degerlendir
+        ms.ayarlari_yaz({"secili": {"site:gemini": False, "site:claude": False}, "ayarlar": dict(HAFIZASIZ)})
+        with mock.patch.object(ms, "site_sayfasi", return_value=b), mock.patch.object(ms.time, "sleep"), \
+                mock.patch.object(ms, "kendi_pencere", return_value=None), \
+                mock.patch.object(ms.siteler, "js_parca", return_value="JS_MODEL_SEC") as j:
+            kod, v = self.post("/api/gonder", {"metin": "merhaba", "model_sec": {"site": "chatgpt", "model": "GPT-5 mini"}})
+        self.assertEqual(kod, 200)
+        j.assert_called_once_with("chatgpt", "model_sec", hedef_model="GPT-5 mini")
+        self.assertEqual(v["gonderilen"], ["ChatGPT"])                 # mevcut modelle yine de gitti
+        self.assertEqual(v["sorunlar"], [{"ad": "ChatGPT", "sebep": "model seçilemedi: menüde bulunamadı"}])
+        self.assertLess(olaylar.index("model_sec"), olaylar.index("yazi"))
+        kayit = ms.ayarlari_oku()["sohbetler"][0]["mesajlar"][0]
+        self.assertEqual(kayit["sorunlar"], v["sorunlar"])
+
+
+class JevBaglantiHttpTesti(HttpTabani):
+    """Jev bağlantıları: /api/oneri (kaynak jev/kural), hassas uyarısı, /api/yanit-puanla, /api/jev-durum.
+
+    jev.sinifla ve jev.hazir_mi yamalanır; ağa hiç çıkılmaz (gerçek Jev'e istek gitmez).
+    """
+
+    def sahte_modeller(self, site_id, yenile=False):
+        return {"site": site_id, **MODEL_LISTELERI[site_id]}
+
+    def jev_yamasi(self, cevap, hazir=True):
+        """cevap(metin, secenekler, **ek) → sonuç ya da istisna; çağrılar self.cagrilar'a kaydedilir."""
+        self.cagrilar = []
+
+        def sinifla(metin, secenekler, baglam="", acik=True, zaman_asimi=8):
+            self.cagrilar.append({"metin": metin, "secenekler": list(secenekler), "baglam": baglam})
+            sonuc = cevap(metin, list(secenekler))
+            if isinstance(sonuc, Exception):
+                raise sonuc
+            return sonuc
+        for yama in (mock.patch.object(ms.jev, "sinifla", sinifla),
+                     mock.patch.object(ms.jev, "hazir_mi", return_value=hazir)):
+            yama.start()
+            self.addCleanup(yama.stop)
+
+    @staticmethod
+    def secim(ad, puan=0.9):
+        return {"secim": ad, "puan": puan, "olasiliklar": {ad: puan}}
+
+    # ---- yönlendirici
+    def test_oneri_jev_hazirken_kaynak_jev(self):
+        def cevap(metin, secenekler):
+            return self.secim("kod") if "kod" in secenekler else self.secim("zor")
+        self.jev_yamasi(cevap)
+        ms.ayarlari_yaz({"ayarlar": dict(HAFIZASIZ)})
+        with mock.patch.object(ms, "site_modelleri", self.sahte_modeller):
+            kod, v = self.post("/api/oneri", {"metin": "Bu makaleyi özetle"})   # kurala göre özet/basit olurdu
+        self.assertEqual(kod, 200)
+        self.assertEqual((v["tur"], v["zorluk"], v["kaynak"]), ("kod", "zor", "jev"))
+        self.assertEqual(v["oneriler"][0]["site"], "claude")   # kod/zor tercih sırası
+        self.assertEqual(len(self.cagrilar), 2)
+        self.assertEqual(sorted(tuple(sorted(c["secenekler"])) for c in self.cagrilar),
+                         sorted([tuple(sorted(ms.yonlendirici.TURLER)), ("basit", "orta", "zor")]))
+        _, d = self.get("/api/yonlendirme")
+        self.assertEqual(d["son"]["kaynak"], "jev")
+
+    def test_oneri_hassas_metni_jeve_gondermez(self):
+        # Yazarken otomatik çağrılan /api/oneri, parola/anahtar içeren metni onay alınmadan Jev'e göndermemeli.
+        self.jev_yamasi(lambda m, s: self.secim("kod"))
+        ms.ayarlari_yaz({"ayarlar": dict(HAFIZASIZ)})
+        with mock.patch.object(ms, "site_modelleri", self.sahte_modeller):
+            kod, v = self.post("/api/oneri", {"metin": "şifre: Abc12345 ile giriş yap"})
+        self.assertEqual(kod, 200)
+        self.assertEqual(v["kaynak"], "kural")
+        self.assertEqual(self.cagrilar, [])
+
+    def test_oneri_jev_hata_verince_kural(self):
+        self.jev_yamasi(lambda m, s: ms.jev.JevHatasi("Jev 8 saniyede yanıt vermedi."))
+        with mock.patch.object(ms, "site_modelleri", self.sahte_modeller):
+            kod, v = self.post("/api/oneri", {"metin": "Bu makaleyi özetle"})
+        self.assertEqual(kod, 200)
+        self.assertEqual((v["tur"], v["zorluk"], v["kaynak"]), ("ozet", "basit", "kural"))
+
+    def test_oneri_jev_kapali_ya_da_hazir_degilse_cagrilmaz(self):
+        self.jev_yamasi(lambda m, s: self.secim("kod"))
+        ms.ayarlari_yaz({"ayarlar": {"jev_acik": False}})
+        with mock.patch.object(ms, "site_modelleri", self.sahte_modeller):
+            _, v = self.post("/api/oneri", {"metin": "Bu makaleyi özetle"})
+        self.assertEqual(v["kaynak"], "kural")
+        self.jev_yamasi(lambda m, s: self.secim("kod"), hazir=False)
+        ms.ayarlari_yaz({"ayarlar": {"jev_acik": True}})
+        with mock.patch.object(ms, "site_modelleri", self.sahte_modeller):
+            _, v = self.post("/api/oneri", {"metin": "Bu makaleyi özetle"})
+        self.assertEqual(v["kaynak"], "kural")
+        self.assertEqual(self.cagrilar, [])
+
+    # ---- hassas bilgi uyarısı
+    def gonder_dene(self, govdeler, ayar=None):
+        gelen = []
+
+        def gonder(veri, metin, site_idleri, program_idleri, enter, sohbet_url=None, site_adresleri=None, **ek):
+            gelen.append(metin)
+            return ["ChatGPT"], [], [], False
+        ms.ayarlari_yaz({"secili": {"site:gemini": False, "site:claude": False}, "ayarlar": {**HAFIZASIZ, **(ayar or {})}})
+        with mock.patch.object(ms, "gonder", gonder), mock.patch.object(ms, "kendi_pencere", return_value=None):
+            return [self.post("/api/gonder", g) for g in govdeler], gelen
+
+    def test_hassas_jev_parola_gorurse_onay_ister(self):
+        self.jev_yamasi(lambda m, s: self.secim("parola", 0.8))
+        ((kod, v),), gelen = self.gonder_dene([{"metin": "parolam annemin doğum yılı artı kedimin adı"}])
+        self.assertEqual(kod, 200)
+        self.assertTrue(v["onay_gerekli"])
+        self.assertEqual((v["kategori"], v["kaynak"]), ("parola", "jev"))
+        self.assertIn("Jev", v["aciklama"])
+        self.assertEqual(gelen, [])
+        self.assertEqual(self.cagrilar[0]["secenekler"], ["parola", "api_anahtari", "kimlik_bilgisi", "finansal", "yok"])
+
+    def test_hassas_jev_dusuk_olasilik_ya_da_yok_ise_gider(self):
+        for sonuc in (self.secim("parola", 0.55), self.secim("yok", 0.95)):
+            with self.subTest(sonuc=sonuc):
+                self.jev_yamasi(lambda m, s, x=sonuc: x)
+                ((_, v),), gelen = self.gonder_dene([{"metin": "merhaba"}])
+                self.assertEqual(v["gonderilen"], ["ChatGPT"])
+                self.assertEqual(len(gelen), 1)
+
+    def test_hassas_jev_hatasi_sessizce_yerel_sonuc(self):
+        self.jev_yamasi(lambda m, s: ms.jev.JevHatasi("Jev sunucusuna ulaşılamadı."))
+        ((kod, v),), gelen = self.gonder_dene([{"metin": "merhaba"}])
+        self.assertEqual((kod, v["gonderilen"]), (200, ["ChatGPT"]))
+        self.jev_yamasi(lambda m, s: RuntimeError("beklenmeyen"))
+        ((kod, v),), _ = self.gonder_dene([{"metin": "merhaba"}])
+        self.assertEqual((kod, v["gonderilen"]), (200, ["ChatGPT"]))
+
+    def test_hassas_yerel_bulursa_jev_sorulmaz_ve_onayli_gider(self):
+        self.jev_yamasi(lambda m, s: self.secim("parola", 0.99))
+        sonuclar, gelen = self.gonder_dene([{"metin": "şifre: Gizli1234"}, {"metin": "gizli şey", "onayli": True}])
+        self.assertEqual((sonuclar[0][1]["kategori"], sonuclar[0][1]["kaynak"]), ("parola", "kural"))
+        self.assertEqual(sonuclar[1][1]["gonderilen"], ["ChatGPT"])
+        self.assertEqual(self.cagrilar, [], "yerel tarama buldu / kullanıcı onayladı: Jev'e gitmez")
+        self.assertEqual(len(gelen), 1)
+
+    def test_hassas_uyari_ya_da_jev_kapaliysa_jev_sorulmaz(self):
+        self.jev_yamasi(lambda m, s: self.secim("parola", 0.99))
+        for ayar in ({"hassas_uyari": False}, {"jev_acik": False}):
+            with self.subTest(ayar=ayar):
+                ((_, v),), _ = self.gonder_dene([{"metin": "merhaba"}], ayar)
+                self.assertEqual(v["gonderilen"], ["ChatGPT"])
+        self.assertEqual(self.cagrilar, [])
+
+    # ---- yanıt puanlama
+    def sohbet_kur(self, yanitlar, puanla=True, jev_acik=True):
+        ms.ayarlari_yaz({"ayarlar": {**HAFIZASIZ, "jev_yanit_puanla": puanla, "jev_acik": jev_acik},
+                         "sohbetler": [{"id": "s1", "baslik": "x", "mesajlar": [
+                             {"metin": "Türkiye'nin başkenti neresi?", "gonderilen": [], "sorunlar": [],
+                              "yanitlar": yanitlar}]}]})
+
+    def test_yanit_puanla(self):
+        self.jev_yamasi(lambda m, s: {"secim": "claude", "puan": 0.7,
+                                      "olasiliklar": {"chatgpt": 0.2, "claude": 0.7, "gemini": 0.1}})
+        self.sohbet_kur({"chatgpt": "Ankara." + "a" * 3000, "gemini": "Ankara'dır.", "claude": "Başkent Ankara."})
+        kod, v = self.post("/api/yanit-puanla", {"sohbet": "s1", "mesaj_sira": 0})
+        self.assertEqual(kod, 200)
+        self.assertEqual((v["onerilen"], v["site_ad"], v["puan"]), ("claude", "Claude", 0.7))
+        (c,) = self.cagrilar
+        self.assertEqual(c["secenekler"], ["chatgpt", "gemini", "claude"])
+        self.assertTrue(c["metin"].startswith("Soru: Türkiye'nin başkenti neresi?\nYanıtlar: [chatgpt: Ankara."))
+        self.assertIn("[claude: Başkent Ankara.]", c["metin"])
+        self.assertLessEqual(len(c["metin"]), ms.jev.METIN_EN_FAZLA, "her site yanıtı bütçeye sığar, sonuncusu kesilmez")
+        self.assertNotIn("a" * (ms.JEV_YANIT_EN_FAZLA + 1), c["metin"])
+        kayit = ms.ayarlari_oku()["sohbetler"][0]["mesajlar"][0]
+        self.assertEqual(kayit["jev_onerilen"], {"site": "claude", "puan": 0.7})
+
+    def test_yanit_puanla_kosullari(self):
+        self.jev_yamasi(lambda m, s: self.secim("chatgpt"))
+        iki = {"chatgpt": "A", "gemini": "B"}
+        durumlar = [
+            (dict(yanitlar=iki, puanla=False), {"sohbet": "s1", "mesaj_sira": 0}, "kapalı"),
+            (dict(yanitlar=iki, jev_acik=False), {"sohbet": "s1", "mesaj_sira": 0}, "Jev kapalı"),
+            (dict(yanitlar={"chatgpt": "A", "gemini": "  "}), {"sohbet": "s1", "mesaj_sira": 0}, "en az iki"),
+            (dict(yanitlar=iki), {"sohbet": "yok", "mesaj_sira": 0}, "bulunamadı"),
+            (dict(yanitlar=iki), {"sohbet": "s1", "mesaj_sira": 5}, "bulunamadı"),
+            (dict(yanitlar=iki), {"sohbet": "s1", "mesaj_sira": True}, "bulunamadı"),
+        ]
+        for kurulum, govde, parca in durumlar:
+            with self.subTest(kurulum=kurulum, govde=govde):
+                self.sohbet_kur(**kurulum)
+                kod, v = self.post("/api/yanit-puanla", govde)
+                self.assertEqual(kod, 400)
+                self.assertIn(parca, v["hata"])
+        self.assertEqual(self.cagrilar, [])
+
+    def test_yanit_puanla_jev_hatasi_400(self):
+        self.jev_yamasi(lambda m, s: ms.jev.JevHatasi("Jev anahtarı reddedildi (401)."))
+        self.sohbet_kur({"chatgpt": "A", "gemini": "B"})
+        kod, v = self.post("/api/yanit-puanla", {"sohbet": "s1", "mesaj_sira": 0})
+        self.assertEqual(kod, 400)
+        self.assertIn("401", v["hata"])
+        self.assertNotIn("jev_onerilen", ms.ayarlari_oku()["sohbetler"][0]["mesajlar"][0])
+
+    # ---- durum ve ayarlar
+    def test_jev_durum_ucu(self):
+        kod, v = self.get("/api/jev-durum")
+        self.assertEqual(kod, 200)
+        for alan in ("ayar_bulundu", "anahtar_dosyasi_bulundu", "model", "hazir", "son_cagri", "son_sonuc", "acik",
+                     "yanit_puanla"):
+            self.assertIn(alan, v)
+        self.assertFalse(v["hazir"], "testlerde gerçek jev.json kullanılmaz (_ortam.py)")
+        self.assertEqual((v["acik"], v["yanit_puanla"]), (True, False))
+        self.assertNotIn("credentials", json.dumps(v))
+
+    def test_jev_ayarlari_varsayilan_ve_sema(self):
+        a = ms.ayarlari_oku()["ayarlar"]
+        self.assertEqual((a["jev_acik"], a["jev_yanit_puanla"]), (True, False))
+        self.assertEqual(self.post("/api/ayar", {"jev_acik": False, "jev_yanit_puanla": True})[0], 200)
+        a = ms.ayarlari_oku()["ayarlar"]
+        self.assertEqual((a["jev_acik"], a["jev_yanit_puanla"]), (False, True))
+        for g in ({"jev_acik": "evet"}, {"jev_yanit_puanla": 1}):
+            with self.subTest(g=g):
+                self.assertEqual(self.post("/api/ayar", g)[0], 400)
 
 
 def js_(anahtar):

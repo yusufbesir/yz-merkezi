@@ -14,7 +14,7 @@ yalnızca okuma işlemleri (mesajlar) yedek yöntem kullanır.
 Her JS parçası `js_sar` ile `(async () => { try { ... } catch ... })()` biçiminde sarılır;
 hata olursa `{"hata": "mesaj"}` döner, böylece Python tarafı hep geçerli JSON alır.
 Hiçbir parça çerez, belirteç, e-posta ya da parola okumaz; yalnızca sohbet başlığı,
-sohbet metni ve arayüz durumuna bakar.
+sohbet metni, model menüsündeki model adları ve arayüz durumuna bakar.
 
 Dönüş değerleri (anahtar: değer):
 - giris_var_mi:       {"giris": bool, "sebep": str}
@@ -30,6 +30,14 @@ Dönüş değerleri (anahtar: değer):
 - son_yanit:          str
 - kutu_hazir_mi:      {"hazir": bool}  (odak işaretli yazı kutusunda ya da onun içinde mi)
 - kutu_metni:         str              (işaretli yazı kutusunun metni; kutu yoksa "")
+- model_listesi:      {"modeller": [{"id": str, "ad": str, "secili": bool}], "sebep": str}
+                      (model seçici menüyü açar, öğeleri okur, bir kademe alt menüleri ("Diğer modeller" vb.) açar
+                      ve menüyü Escape / dışarı tıklayarak KAPATIR; menü yoksa modeller=[] ve
+                      sebep="model menüsü bulunamadı")
+- model_sec:          {"tamam": bool, "secilen": str, "sebep": str}
+                      (hedef `js_parca(site, "model_sec", hedef_model="...")` ile verilir: ad ya da id, büyük/küçük
+                      harf duyarsız tam eşleşme, yoksa "içerir" eşleşmesi (tek aday olmalı; birden çok aday
+                      tamam=false ve sebepte adaylar). 500 ms sonra menü düğmesindeki metnin değiştiğini doğrular)
 
 Kenar çubuğunu açmak yalnızca `js_parca(site, "sohbet_listesi", kenar_ac=True)` ile istenirse yapılır;
 varsayılan JS sayfada hiçbir düğmeye tıklamaz.
@@ -43,10 +51,11 @@ import urllib.parse
 JS_ANAHTARLARI = (
     "giris_var_mi", "sohbet_listesi", "mesajlar", "yaziyor_mu",
     "yazi_kutusunu_bul", "gonder", "son_yanit", "kutu_hazir_mi", "kutu_metni",
+    "model_listesi", "model_sec",
 )
 
 # js_parca ile çalışma anında değiştirilebilen ayarlar (başka anahtar kabul edilmez).
-_EK_AYAR_ANAHTARLARI = ("kenar_ac",)
+_EK_AYAR_ANAHTARLARI = ("kenar_ac", "hedef_model")
 
 # Genel yedek: site özel desen bulunamazsa her sitedeki sohbet adresleri bu desenlerle aranır.
 # Her giriş (önek, düzenli ifade): ifadenin ilk grubu sohbet kimliğidir.
@@ -97,6 +106,18 @@ _AYARLAR = {
             'button[data-testid="open-sidebar-button"]',
             'button[aria-label="Open sidebar"]',
         ],
+        "model_dugmesi": [
+            'button[data-testid="model-switcher-dropdown-button"]',
+            'button[data-testid*="model-switcher" i]',
+            'button[aria-haspopup="menu"][aria-label*="model" i]',
+        ],
+        "model_ogeleri": [
+            '[role="menuitem"]',
+            '[role="menuitemradio"]',
+            '[role="option"]',
+            '[data-testid^="model-switcher-"][role]',
+        ],
+        "model_alt_menu": r"^(diğer modeller|other models|more models|legacy models?|eski modeller|daha fazla( model(ler)?)?|more)\b",
     },
     "gemini": {
         "url_desenleri": [["", "/app/([^/?#]+)"]],
@@ -160,6 +181,19 @@ _AYARLAR = {
             'button[aria-label="Main menu"]',
             'button[data-test-id="side-nav-menu-button"]',
         ],
+        "model_dugmesi": [
+            'button[data-test-id="bard-mode-menu-button"]',
+            'bard-mode-switcher button',
+            'button[aria-haspopup="menu"][aria-label*="mod" i]',
+            'button[aria-haspopup="menu"][aria-label*="model" i]',
+        ],
+        "model_ogeleri": [
+            '[role="menuitem"]',
+            '[role="menuitemradio"]',
+            '[role="option"]',
+            'button.mat-mdc-menu-item[data-test-id*="bard-mode" i]',
+        ],
+        "model_alt_menu": r"^(diğer modeller|other models|more models|legacy models?|eski modeller|daha fazla( model(ler)?)?|more)\b",
     },
     "claude": {
         "url_desenleri": [["", "/chat/([^/?#]+)"], ["proje-", "/project/([^/?#]+)"]],
@@ -209,6 +243,17 @@ _AYARLAR = {
         "kenar_dugmesi": [
             'button[aria-label*="sidebar" i]',
         ],
+        "model_dugmesi": [
+            'button[data-testid="model-selector-dropdown"]',
+            'button[data-testid*="model-selector" i]',
+            'button[aria-haspopup="menu"][aria-label*="model" i]',
+        ],
+        "model_ogeleri": [
+            '[role="menuitem"]',
+            '[role="menuitemradio"]',
+            '[role="option"]',
+        ],
+        "model_alt_menu": r"^(diğer modeller|other models|more models|legacy models?|eski modeller|daha fazla( model(ler)?)?|more)\b",
     },
 }
 
@@ -505,6 +550,198 @@ if (!kutu) { return ""; }
 return kes((kutu.tagName === "TEXTAREA" || kutu.tagName === "INPUT") ? kutu.value : kutu.innerText, 100000);
 """
 
+_MODEL_YARDIMCI = r"""
+const kucuk = (s) => temiz(s).toLowerCase().replace(/̇/g, "");
+const modelId = (s) => kucuk(s).replace(/\s+/g, "-");
+const OGE_SECICI = AYAR.model_ogeleri.join(", ");
+const ogeOku = () => sec(OGE_SECICI).filter(gorunur);
+// Menü kapalıyken zaten görünen benzer öğeler "taban" sayılır; yalnızca menüyle gelen yeni öğeler okunur.
+const tabanAl = (dugme) => new Set(dugme.getAttribute("aria-expanded") === "true" ? [] : ogeOku());
+const modelOgeleri = (taban) => ogeOku().filter((e) => !taban.has(e));
+const menuDugmesi = () => ilkDolu(AYAR.model_dugmesi, gorunur)[0] || null;
+const dugmeMetni = (d) => temiz(d.innerText || d.textContent || d.getAttribute("aria-label"));
+const ogeAdi = (el) => {
+  const satirlar = String(el.innerText || el.textContent || "").split("\n")
+    .map((x) => temiz(x.replace(/[✓✔]/g, ""))).filter(Boolean);
+  return kes(satirlar.length ? satirlar[0] : temiz(el.getAttribute("aria-label")), 200);
+};
+const altMenuMu = (el) => {
+  const p = String(el.getAttribute("aria-haspopup") || "").toLowerCase();
+  if (p && p !== "false") { return true; }
+  return new RegExp(AYAR.model_alt_menu, "i").test(ogeAdi(el));
+};
+const ogeSecili = (el) => {
+  const nitelik = (a) => String(el.getAttribute(a) || "").toLowerCase();
+  if (nitelik("aria-checked") === "true" || nitelik("aria-selected") === "true" || nitelik("aria-current") === "true") { return true; }
+  if (/^(checked|on|active|selected)$/.test(nitelik("data-state"))) { return true; }
+  if (/(^|\s)(selected|active|checked)(\s|$)/.test(nitelik("class"))) { return true; }
+  if (el.querySelector('[data-testid*="check" i], [class*="check" i], [data-icon*="check" i], [fonticon*="check" i]')) { return true; }
+  return /[✓✔]/.test(String(el.innerText || el.textContent || ""));
+};
+// Radix/Material menüleri fare olaylarına (pointerdown...) tepki verir; düz click() her yerde yetmez.
+const isaretciOlayi = (el, tur, ek) => {
+  try { el.dispatchEvent(new PointerEvent(tur, Object.assign({ pointerId: 1, pointerType: "mouse", isPrimary: true, bubbles: true, cancelable: true, composed: true, view: window, button: 0 }, ek || {}))); } catch (x) { /* eski tarayıcı */ }
+};
+const fareOlayi = (el, tur) => {
+  el.dispatchEvent(new MouseEvent(tur, { bubbles: true, cancelable: true, composed: true, view: window, button: 0 }));
+};
+const tikla = (el) => {
+  isaretciOlayi(el, "pointerdown"); fareOlayi(el, "mousedown");
+  isaretciOlayi(el, "pointerup"); fareOlayi(el, "mouseup");
+  fareOlayi(el, "click");
+};
+const ustuneGel = (el) => {
+  isaretciOlayi(el, "pointerover"); fareOlayi(el, "mouseover");
+  isaretciOlayi(el, "pointermove"); fareOlayi(el, "mousemove");
+};
+const bekleKosul = async (fn, ms) => {
+  const bitis = Date.now() + ms;
+  let v = fn();
+  while (!v && Date.now() < bitis) { await bekle(100); v = fn(); }
+  return v;
+};
+const menuAc = async (dugme, taban) => {
+  if (dugme.getAttribute("aria-expanded") === "true" && modelOgeleri(taban).length) { return true; }
+  tikla(dugme);
+  if (await bekleKosul(() => modelOgeleri(taban).length, 1500)) { return true; }
+  dugme.click();  // bazı menüler yalnızca düz click ile açılır
+  return !!(await bekleKosul(() => modelOgeleri(taban).length, 1500));
+};
+const escGonder = () => {
+  const hedef = document.activeElement || document.body;
+  ["keydown", "keyup"].forEach((t) => {
+    hedef.dispatchEvent(new KeyboardEvent(t, { key: "Escape", code: "Escape", keyCode: 27, which: 27, bubbles: true, cancelable: true }));
+  });
+};
+const menuKapat = async (taban) => {
+  for (let i = 0; i < 3 && modelOgeleri(taban).length; i++) { escGonder(); await bekle(200); }
+  if (modelOgeleri(taban).length) { tikla(document.body); await bekle(250); }  // dışarı tıkla
+  return !modelOgeleri(taban).length;
+};
+// Menüdeki modelleri okur: [{el, ad, id, secili, tetik}]; altAc ise bir kademe alt menüler de açılıp okunur.
+const modelleriTopla = async (taban, altAc) => {
+  const liste = [];
+  const ekle = (el, tetik) => {
+    const ad = ogeAdi(el);
+    if (!ad) { return; }
+    const id = modelId(ad);
+    const secili = ogeSecili(el);
+    const varOlan = liste.find((m) => m.id === id);
+    if (varOlan) { varOlan.secili = varOlan.secili || secili; return; }
+    liste.push({ el: el, ad: ad, id: id, secili: secili, tetik: tetik });
+  };
+  const ana = modelOgeleri(taban);
+  const altlar = ana.filter(altMenuMu);
+  ana.forEach((e) => { if (!altMenuMu(e)) { ekle(e, ""); } });
+  if (altAc) {
+    const bilinen = new Set(ana);
+    for (const t of altlar.slice(0, 4)) {
+      ustuneGel(t);
+      tikla(t);
+      await bekle(500);
+      const yeni = modelOgeleri(taban).filter((e) => !bilinen.has(e));
+      yeni.forEach((e) => bilinen.add(e));
+      yeni.forEach((e) => { if (!altMenuMu(e)) { ekle(e, ogeAdi(t)); } });
+    }
+  }
+  return liste;
+};
+// Hiçbir öğe işaretli değilse menü düğmesindeki geçerli ad ile tek bir öğe eşleşiyorsa o seçili sayılır.
+const seciliBelirle = (liste, metin) => {
+  if (liste.some((m) => m.secili)) { return; }
+  const k = kucuk(metin);
+  if (!k) { return; }
+  const aday = liste.filter((m) => modelId(m.ad) === modelId(metin) || k.indexOf(kucuk(m.ad)) >= 0);
+  if (aday.length === 1) { aday[0].secili = true; }
+};
+"""
+
+_MODEL_LISTESI = r"""
+const dugme = menuDugmesi();
+if (!dugme) { return { modeller: [], sebep: "model menüsü bulunamadı" }; }
+const taban = tabanAl(dugme);
+const metin = dugmeMetni(dugme);
+let sonuc = { modeller: [], sebep: "model menüsü bulunamadı" };
+let kapandi = true;
+try {
+  if (await menuAc(dugme, taban)) {
+    const liste = await modelleriTopla(taban, true);
+    seciliBelirle(liste, metin);
+    if (liste.length) {
+      sonuc = {
+        modeller: liste.map((m) => ({ id: m.id, ad: m.ad, secili: m.secili })),
+        sebep: liste.length + " model okundu"
+      };
+    }
+  }
+} finally {
+  kapandi = await menuKapat(taban);
+}
+if (!kapandi) { sonuc.sebep += " (menü kapatılamadı)"; }
+return sonuc;
+"""
+
+_MODEL_SEC = r"""
+const hedef = temiz(AYAR.hedef_model);
+if (!hedef) { return { tamam: false, secilen: "", sebep: "hedef model verilmedi" }; }
+const dugme = menuDugmesi();
+if (!dugme) { return { tamam: false, secilen: "", sebep: "model menüsü bulunamadı" }; }
+const onceki = dugmeMetni(dugme);
+const taban = tabanAl(dugme);
+const hedefK = kucuk(hedef);
+const hedefId = modelId(hedef);
+const eslestir = (liste) => {
+  const tam = liste.filter((m) => kucuk(m.ad) === hedefK || m.id === hedefId);
+  if (tam.length) { return tam; }
+  return liste.filter((m) => kucuk(m.ad).indexOf(hedefK) >= 0 || m.id.indexOf(hedefId) >= 0);
+};
+const adlar = (liste) => liste.map((m) => m.ad).join(" | ");
+let sonuc = { tamam: false, secilen: onceki, sebep: "model menüsü bulunamadı" };
+try {
+  if (await menuAc(dugme, taban)) {
+    let liste = await modelleriTopla(taban, false);
+    let adaylar = eslestir(liste);
+    if (!adaylar.length) {
+      liste = await modelleriTopla(taban, true);  // ana menüde yok: alt menülere de bak
+      adaylar = eslestir(liste);
+    }
+    if (!adaylar.length) {
+      sonuc = { tamam: false, secilen: onceki, sebep: "model bulunamadı: " + kes(hedef, 100) + " (mevcut: " + kes(adlar(liste), 500) + ")" };
+    } else if (adaylar.length > 1) {
+      sonuc = { tamam: false, secilen: onceki, sebep: "belirsiz, birden çok aday: " + kes(adlar(adaylar), 500) };
+    } else if (adaylar[0].secili) {
+      sonuc = { tamam: true, secilen: onceki, sebep: "model zaten seçili: " + adaylar[0].ad };
+    } else {
+      const aday = adaylar[0];
+      let tiklanacak = aday.el;
+      let hata = "";
+      if (aday.tetik) {  // alt menüdeki öğe: önce alt menüyü yeniden aç
+        const t = modelOgeleri(taban).find((e) => altMenuMu(e) && ogeAdi(e) === aday.tetik);
+        if (t) { ustuneGel(t); tikla(t); await bekle(500); }
+        tiklanacak = modelOgeleri(taban).find((e) => !altMenuMu(e) && modelId(ogeAdi(e)) === aday.id) || null;
+        if (!tiklanacak) { hata = "alt menü açılamadı: " + aday.tetik; }
+      }
+      if (hata) {
+        sonuc = { tamam: false, secilen: onceki, sebep: hata };
+      } else {
+        tikla(tiklanacak);
+        await bekle(500);
+        let yeni = dugmeMetni(menuDugmesi() || dugme);
+        if (yeni === onceki) { await bekle(700); yeni = dugmeMetni(menuDugmesi() || dugme); }
+        if (yeni !== onceki) {
+          sonuc = { tamam: true, secilen: yeni, sebep: "seçildi: " + aday.ad };
+        } else {
+          sonuc = { tamam: false, secilen: yeni, sebep: "tıklandı ama menü düğmesindeki metin değişmedi: " + aday.ad };
+        }
+      }
+    }
+  }
+} finally {
+  await menuKapat(taban);
+}
+return sonuc;
+"""
+
 # anahtar -> (ek yardımcılar, gövde)
 _PARCALAR = {
     "giris_var_mi": ("", _GIRIS_VAR_MI),
@@ -516,6 +753,8 @@ _PARCALAR = {
     "son_yanit": (_MESAJ_YARDIMCI, _SON_YANIT),
     "kutu_hazir_mi": (_YAZI_YARDIMCI, _KUTU_HAZIR_MI),
     "kutu_metni": (_YAZI_YARDIMCI, _KUTU_METNI),
+    "model_listesi": (_MODEL_YARDIMCI, _MODEL_LISTESI),
+    "model_sec": (_MODEL_YARDIMCI, _MODEL_SEC),
 }
 
 
@@ -545,9 +784,12 @@ def _parca_uret(site_id, anahtar, ayar_ek=None):
     ayar = dict(_AYARLAR[site_id])
     ayar["genel_desenler"] = _GENEL_DESENLER
     ayar["kenar_ac"] = False  # varsayılan: sayfada kenar çubuğu düğmesine tıklanmaz
+    ayar["hedef_model"] = ""  # model_sec için hedef model (ad ya da id); boşsa hiçbir şey seçilmez
     for ad, deger in (ayar_ek or {}).items():
         if ad not in _EK_AYAR_ANAHTARLARI:
             raise ValueError("Bilinmeyen ek ayar: %r (olanlar: %s)" % (ad, ", ".join(_EK_AYAR_ANAHTARLARI)))
+        if ad == "hedef_model" and not isinstance(deger, str):
+            raise ValueError("hedef_model metin olmalı: %r" % (deger,))
         ayar[ad] = deger
     ek, govde = _PARCALAR[anahtar]
     giris = "const AYAR = " + json.dumps(ayar, ensure_ascii=True) + ";\n"
@@ -575,7 +817,8 @@ def js_parca(site_id, anahtar, **ayar_ek):
     """Bir JS parçasını isteğe bağlı ek ayarlarla yeniden üretir.
 
     Örnek: `js_parca("chatgpt", "sohbet_listesi", kenar_ac=True)` kenar çubuğunu açma düğmesine
-    (AYAR.kenar_dugmesi) tıklayabilen sürümü verir. Hazır `SITELER[site]["js"]` parçalarında kenar_ac
+    (AYAR.kenar_dugmesi) tıklayabilen sürümü verir; `js_parca("claude", "model_sec", hedef_model="Sonnet")`
+    model_sec için hedef modeli (ad ya da id) verir. Hazır `SITELER[site]["js"]` parçalarında kenar_ac
     her zaman false'tur. Bilinmeyen site, anahtar ya da ayar adı için KeyError/ValueError fırlatır.
     """
     site(site_id)

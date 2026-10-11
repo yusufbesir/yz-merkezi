@@ -1,0 +1,60 @@
+{
+  "_aciklama": "Ajan seçimi tercih sırası. Her tercih bir site ve o sitenin model menüsünde GEÇEN bir ad parçasıdır (büyük/küçük harf fark etmez; ör. 'flash', 'sonnet', 'sonnet 5.5'). Gerçek model adı canlı menüden bulunur; menü okunamazsa yalnızca site önerilir. Sıra önemlidir: ilk tercih en uygun olandır. Arama sırası: turler > tür > zorluk, yoksa turler > tür > hepsi, yoksa varsayilan > zorluk. Türler: arastirma, kod, yazi, ceviri, ozet, sohbet, matematik. Zorluklar: basit, orta, zor. Siteler: chatgpt, gemini, claude. Ayrıntı: BENIOKU.md > Yönlendirme ve hassas bilgi uyarısı.",
+  "varsayilan": {
+    "basit": [
+      {"site": "gemini", "model_icerir": "flash"},
+      {"site": "chatgpt", "model_icerir": "mini"},
+      {"site": "claude", "model_icerir": "haiku"}
+    ],
+    "orta": [
+      {"site": "claude", "model_icerir": "sonnet"},
+      {"site": "chatgpt", "model_icerir": "gpt"},
+      {"site": "gemini", "model_icerir": "pro"}
+    ],
+    "zor": [
+      {"site": "claude", "model_icerir": "opus"},
+      {"site": "chatgpt", "model_icerir": "pro"},
+      {"site": "gemini", "model_icerir": "pro"}
+    ]
+  },
+  "turler": {
+    "kod": {
+      "basit": [
+        {"site": "claude", "model_icerir": "haiku"},
+        {"site": "chatgpt", "model_icerir": "mini"},
+        {"site": "gemini", "model_icerir": "flash"}
+      ],
+      "orta": [
+        {"site": "claude", "model_icerir": "sonnet"},
+        {"site": "chatgpt", "model_icerir": "gpt"},
+        {"site": "gemini", "model_icerir": "pro"}
+      ],
+      "zor": [
+        {"site": "claude", "model_icerir": "opus"},
+        {"site": "chatgpt", "model_icerir": "pro"},
+        {"site": "gemini", "model_icerir": "pro"}
+      ]
+    },
+    "ceviri": {
+      "hepsi": [
+        {"site": "gemini", "model_icerir": "flash"},
+        {"site": "chatgpt", "model_icerir": "mini"},
+        {"site": "claude", "model_icerir": "haiku"}
+      ]
+    },
+    "ozet": {
+      "hepsi": [
+        {"site": "gemini", "model_icerir": "flash"},
+        {"site": "chatgpt", "model_icerir": "mini"},
+        {"site": "claude", "model_icerir": "haiku"}
+      ]
+    },
+    "arastirma": {
+      "zor": [
+        {"site": "gemini", "model_icerir": "pro"},
+        {"site": "claude", "model_icerir": "opus"},
+        {"site": "chatgpt", "model_icerir": "pro"}
+      ]
+    }
+  }
+}

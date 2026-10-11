@@ -20,6 +20,10 @@
   </form>
 </nav>
 <main>
+  <!-- ChatGPT benzeri model seçici: menü tıklanınca betik tarafından gövdeye eklenir (role=menu), Escape ile kapanır. -->
+  <div id="ust">
+    <button type="button" id="model-dugmesi" data-testid="model-switcher-dropdown-button" aria-haspopup="menu" aria-expanded="false">GPT-5 Deneme</button>
+  </div>
   <div id="sohbet"></div>
   <form id="alt">
     <div id="prompt-textarea" contenteditable="true" role="textbox"></div>

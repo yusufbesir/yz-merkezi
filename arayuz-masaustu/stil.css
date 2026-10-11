@@ -213,6 +213,9 @@ dialog::backdrop { background: rgba(0, 0, 0, .5); }
 .asistan-baslik .nokta { width: 9px; height: 9px; border-radius: 50%; flex: none; }
 .asistan-baslik b { color: var(--metin); font-weight: 600; }
 .asistan-durum { font-size: 12px; font-style: italic; }
+.rozet { font-size: 11px; font-weight: 600; padding: 1px 8px; border-radius: 10px; color: var(--vurgu-koyu);
+         background: rgba(217, 119, 87, .14); border: 1px solid rgba(217, 119, 87, .45); }
+.uyari-metni { border-left: 3px solid var(--vurgu); padding-left: 8px; }
 .asistan-metin { white-space: pre-wrap; overflow-wrap: anywhere; }
 .asistan-metin.imlec::after { content: "▍"; color: var(--vurgu); animation: yanip 1s steps(2) infinite; }
 @keyframes yanip { 50% { opacity: 0; } }
@@ -225,3 +228,32 @@ dialog::backdrop { background: rgba(0, 0, 0, .5); }
 .giris-satir .nokta { width: 8px; height: 8px; border-radius: 50%; flex: none; }
 .giris-satir button { font-size: 12px; padding: 2px 10px; border: 1px solid #d9822b; color: #d9822b; }
 .giris-satir button:hover { background: rgba(217, 130, 43, .2); }
+
+/* ---------------- Hafıza OS: mesaj balonunun altındaki katlanabilir "Hafızadan eklenen bağlam" */
+.mesaj .baglam { align-self: flex-end; max-width: 85%; font-size: 12px; color: var(--soluk); }
+.mesaj .baglam summary { cursor: pointer; list-style-position: inside; }
+.mesaj .baglam pre { margin: 6px 0 0; padding: 8px 12px; background: var(--yuzey); border: 1px solid var(--kenar); border-radius: 10px; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.5 var(--sans); color: var(--metin); }
+#hafizaDurum.hata { color: #c0392b; }
+
+/* ---------------- hassas bilgi uyarısı, ajan seçimi (öneri şeridi) ve Ayarlar → Yönlendirme */
+.hassas-seridi, .oneri-seridi { max-width: 780px; margin: 0 auto 6px; }
+.hassas-satir, .oneri-satir {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 6px 12px; margin-bottom: 4px;
+  border-radius: 10px; font-size: 13px;
+}
+.hassas-satir { background: rgba(192, 57, 43, .10); border: 1px solid rgba(192, 57, 43, .45); }
+.hassas-satir button { font-size: 12px; padding: 2px 10px; border: 1px solid #c0392b; color: #c0392b; }
+.hassas-satir button:hover { background: rgba(192, 57, 43, .18); }
+.hassas-satir button:first-of-type { margin-left: auto; }
+.oneri-satir { background: rgba(217, 119, 87, .10); border: 1px solid rgba(217, 119, 87, .40); }
+.oneri-satir .nokta { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.oneri-satir button { font-size: 12px; padding: 2px 10px; border: 1px solid var(--vurgu); color: var(--vurgu-koyu); }
+.oneri-satir button:hover { background: rgba(217, 119, 87, .18); }
+.oneri-satir button:disabled { opacity: .6; cursor: default; background: none; }
+.oneri-satir button:first-of-type { margin-left: auto; }
+.oneri-satir .oneri-not { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.yonlendirme-tablo { border-collapse: collapse; width: 100%; font-size: 13px; }
+.yonlendirme-tablo th, .yonlendirme-tablo td { text-align: left; vertical-align: top; padding: 8px 8px 8px 0; border-bottom: 1px solid var(--kenar); }
+.yonlendirme-tablo th { color: var(--soluk); font-weight: 500; }
+.yonlendirme-tablo td.tur { font-weight: 600; white-space: nowrap; }
+.yonlendirme-tablo td.son { background: rgba(217, 119, 87, .14); border-radius: 6px; padding-left: 6px; }

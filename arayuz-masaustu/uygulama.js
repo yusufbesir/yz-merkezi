@@ -279,6 +279,13 @@ function asistanBlogu(ad, renk, metin = "") {
       govde.classList.toggle("imlec", Boolean(yaziyor));
       durumEtiketi.textContent = yaziyor ? "yazıyor…" : not;
     },
+    // Jev yanıt puanlaması: bu yanıta "Önerilen yanıt (Jev)" rozeti (puan = Jev'in bu seçime verdiği olasılık)
+    rozetKoy(puan) {
+      if (baslik.querySelector(".rozet")) return;
+      const rozet = el("span", "rozet", "Önerilen yanıt (Jev)");
+      if (typeof puan === "number") rozet.title = `Jev'e göre olasılık: %${Math.round(puan * 100)}`;
+      baslik.insertBefore(rozet, durumEtiketi);
+    },
   };
 }
 
@@ -300,10 +307,13 @@ function mesajBalonu(m) {
   kopyala.addEventListener("click", () => navigator.clipboard.writeText(m.metin).then(() => bildir("Kopyalandı.")));
   ek.append(tekrar, kopyala);
   kutu.append(ek);
+  if (m.baglam) kutu.append(baglamKutusu(m.baglam));
   const yanitlar = el("div", "yanitlar");
   for (const [siteId, metin] of Object.entries(m.yanitlar || {})) {
     const site = siteBul(siteId);
-    yanitlar.append(asistanBlogu(site ? site.ad : siteId, site ? site.renk : "#888", metin).kok);
+    const blok = asistanBlogu(site ? site.ad : siteId, site ? site.renk : "#888", metin);
+    if (m.jev_onerilen && m.jev_onerilen.site === siteId) blok.rozetKoy(m.jev_onerilen.puan);
+    yanitlar.append(blok.kok);
   }
   kutu.append(yanitlar);
   return kutu;
@@ -445,10 +455,12 @@ Mesaj bunların hepsine aynı anda gönderilsin mi? (Bir kez onaylayınca bir da
   return true;
 }
 
-async function gonder() {
+// onayli: hassas bilgi uyarısında "Yine de gönder" ile çağrılırsa true (yalnızca tam true sayılır)
+async function gonder(onayli = false) {
   const metin = mesajKutusu.value.trim();
   if (!metin || durum.gonderiliyor) return;
-  if (!cokluHedefOnaylandiMi()) { durumSatiri("Gönderme iptal edildi.", false); return; }
+  onayli = onayli === true;
+  if (!onayli && !cokluHedefOnaylandiMi()) { durumSatiri("Gönderme iptal edildi.", false); return; }
   durum.gonderiliyor = true;
   $("#gonder").disabled = true;
   const siteModu = Boolean(durum.siteSohbet);
@@ -458,12 +470,18 @@ async function gonder() {
   try {
     const govde = { metin, sohbet: siteModu ? null : durum.sohbet };
     if (siteModu) govde.sohbet_url = sc.url;
+    const model = gonderilecekModel();
+    if (model) govde.model_sec = model;
+    if (onayli) govde.onayli = true;
     const v = await api("/api/gonder", govde);
+    if (v.onay_gerekli) { hassasSeridiGoster(v, metin); return; }  // hiçbir şey gönderilmedi
+    hassasSeridiGizle(); oneriTemizle();
     durum.sohbetler = v.sohbetler;
     if (durum.ayarlar.kutuyu_temizle && v.gonderilen.length) { mesajKutusu.value = ""; boyutla(); }
     let kapsayici, kayit = null;
     if (siteModu) {
       const kutu = kullaniciBalonu(metin);
+      if (v.baglam) kutu.append(baglamKutusu(v.baglam));
       kapsayici = el("div", "yanitlar");
       kutu.append(kapsayici);
       $("#mesajlar").append(kutu);
@@ -473,12 +491,16 @@ async function gonder() {
       kapsayici = $("#mesajlar").lastElementChild.querySelector(".yanitlar");
       kayit = { sohbet: v.sohbet, sira: v.mesaj_sira };
     }
+    const bloklar = {}, beklenenler = [];
     for (const b of v.yanit_bekleyen || []) {
       const blok = asistanBlogu(b.ad, b.renk);
       blok.yaz("", true);
       kapsayici.append(blok.kok);
-      yanitBekle(b, blok, kayit, siteModu ? sc : null);  // arka planda sürer
+      bloklar[b.site] = blok;
+      beklenenler.push(yanitBekle(b, blok, kayit, siteModu ? sc : null));  // arka planda sürer
     }
+    // Ortak sohbette bütün site yanıtları bitince (ayar açıksa) Jev en iyi yanıtı seçer.
+    if (kayit && beklenenler.length > 1) Promise.all(beklenenler).then((metinler) => yanitlariPuanla(kayit, bloklar, metinler));
     sonaKaydir();
     const sorun = v.sorunlar.map((s) => `${s.ad}: ${s.sebep}`).join("; ");
     durumSatiri((v.gonderilen.length ? `Gönderildi: ${v.gonderilen.join(", ")}.` : "Hiçbir yere gönderilemedi.") + (sorun ? `  Sorun: ${sorun}` : ""), Boolean(sorun));
@@ -521,6 +543,20 @@ async function yanitBekle(b, blok, kayit, siteSohbeti) {
   }
   siteSohbetleriYukle(true);  // site yeni sohbet oluşturduysa listede görünsün
   if (siteSohbeti && durum.bekleyenYanit === 0) siteSohbetiYenile(siteSohbeti);
+  return metin;
+}
+
+// Ayarlar → Jev → "Yanıtları Jev ile puanla" açıksa: en az iki yanıt kaydedildiyse sunucu Jev'e en iyisini sorar.
+async function yanitlariPuanla(kayit, bloklar, metinler) {
+  if (!durum.ayarlar.jev_yanit_puanla || durum.ayarlar.jev_acik === false) return;
+  if (metinler.filter((m) => m && m.trim()).length < 2) return;
+  try {
+    const v = await api("/api/yanit-puanla", { sohbet: kayit.sohbet, mesaj_sira: kayit.sira });
+    const s = durum.sohbetler.find((x) => x.id === kayit.sohbet);
+    const m = s && s.mesajlar[kayit.sira];
+    if (m) m.jev_onerilen = { site: v.onerilen, puan: v.puan };
+    if (bloklar[v.onerilen]) bloklar[v.onerilen].rozetKoy(v.puan);
+  } catch (h) { bildir(h.message); }
 }
 
 async function yanitiKaydet(kayit, siteId, metin) {
@@ -579,6 +615,8 @@ function ayarlariDoldur() {
   $("#ayarEnter").checked = Boolean(a.enter_bas);
   $("#ayarTemizle").checked = Boolean(a.kutuyu_temizle);
   $("#ayarCokluOnay").checked = onayIsteniyor();
+  $("#ayarHassasUyari").checked = a.hassas_uyari !== false;
+  $("#ayarOtomatikYonlendirme").checked = Boolean(a.otomatik_yonlendirme);
   $("#ayarYerlesim").value = a.yerlesim || "sol";
   $$("#ayarTema button").forEach((b) => b.classList.toggle("aktif", b.dataset.deger === (a.tema || "sistem")));
   $$("#ayarYazi button").forEach((b) => b.classList.toggle("aktif", b.dataset.deger === (a.yazi_boyutu || "orta")));
@@ -659,6 +697,186 @@ async function programEkleAc() {
   } catch (h) { bildir(h.message); }
 }
 
+// ---------------------------------------------------------------- hassas bilgi uyarısı
+
+// Sunucu mesajda API anahtarı, parola, kimlik/IBAN/kart numarası kalıbı bulursa gönderme yapmaz ve {onay_gerekli} döner.
+// Şerit görünürken metin değişirse onay geçersiz sayılır ("Yine de gönder" metni yeniden denetletir).
+const hassasSeridi = $("#hassasSeridi");
+let hassasMetin = null;
+
+function hassasSeridiGizle() {
+  hassasMetin = null;
+  hassasSeridi.hidden = true;
+  hassasSeridi.innerHTML = "";
+}
+
+function hassasSeridiGoster(v, metin) {
+  hassasMetin = metin;
+  hassasSeridi.innerHTML = "";
+  const satir = el("div", "hassas-satir");
+  const yine = el("button", "", "Yine de gönder");
+  yine.addEventListener("click", () => {
+    const degisti = mesajKutusu.value.trim() !== hassasMetin;
+    hassasSeridiGizle();
+    if (degisti) { durumSatiri("Metin değişti; yeniden denetleniyor."); gonder(); } else gonder(true);
+  });
+  const vazgec = el("button", "", "Vazgeç");
+  vazgec.addEventListener("click", () => { hassasSeridiGizle(); durumSatiri("Gönderme iptal edildi."); mesajKutusu.focus(); });
+  satir.append(el("span", "", `Bu mesaj ${v.aciklama} içeriyor olabilir.`), yine, vazgec);
+  hassasSeridi.append(satir);
+  hassasSeridi.hidden = false;
+  durumSatiri("Göndermeden önce onay gerekiyor.", true);
+}
+
+// ---------------------------------------------------------------- ajan seçimi (yönlendirici)
+
+// Yazarken 600 ms sonra /api/oneri çağrılır: sunucu mesajı kurallarla sınıflandırır (tür/zorluk) ve tercih sırasındaki
+// siteleri (varsa canlı menüden eşleşen model adıyla) önerir. "Uygula" yalnızca önerilen siteyi hedef yapar ve
+// gönderim isteğine model_sec ekletir; "Otomatik yönlendirme" açıksa öneri kendiliğinden uygulanır.
+const oneriSeridi = $("#oneriSeridi");
+const ONERI_GECIKMESI = 600;   // ms
+let oneriZamani = null, oneriSayaci = 0;
+Object.assign(durum, {
+  oneri: null,          // son /api/oneri yanıtı
+  oneriSira: 0,         // şeritte gösterilen önerinin sırası
+  oneriUygulandi: false,
+  oneriSecimi: false,   // hedef seçimini öneri değiştirdi mi (metin silinirse geri yüklenir)
+  modelSec: null,       // uygulanan öneri: { site, model }; gönderimde model_sec olarak gider
+});
+
+function gonderilecekModel() {
+  const m = durum.modelSec;
+  const s = m && siteBul(m.site);
+  return s && s.secili ? m : null;
+}
+
+function oneriSeridiBosalt() {
+  oneriSeridi.hidden = true;
+  oneriSeridi.innerHTML = "";
+}
+
+function oneriTemizle() {
+  clearTimeout(oneriZamani);
+  oneriSayaci++;  // uçuştaki isteklerin yanıtı yok sayılır
+  durum.oneri = null; durum.modelSec = null; durum.oneriUygulandi = false;
+  oneriSeridiBosalt();
+  if (durum.oneriSecimi) { durum.oneriSecimi = false; secimiGeriYukle(); }
+}
+
+function oneriPlanla() {
+  clearTimeout(oneriZamani);
+  const metin = mesajKutusu.value.trim();
+  if (metin.length < 4 || durum.siteSohbet) { oneriTemizle(); return; }
+  oneriZamani = setTimeout(() => oneriIste(metin), ONERI_GECIKMESI);
+}
+
+async function oneriIste(metin) {
+  const sayac = ++oneriSayaci;
+  try {
+    const v = await api("/api/oneri", { metin });
+    if (sayac !== oneriSayaci) return;  // daha yeni bir istek var ya da metin silindi
+    Object.assign(durum, { oneri: v, oneriSira: 0, oneriUygulandi: false, modelSec: null });
+    if (durum.ayarlar.otomatik_yonlendirme) await oneriUygula();
+    if (sayac === oneriSayaci) oneriCiz();
+  } catch (_) {
+    if (sayac === oneriSayaci) oneriSeridiBosalt();  // öneri isteğe bağlıdır: hata sessizce şeridi gizler
+  }
+}
+
+async function oneriUygula() {
+  const o = durum.oneri && durum.oneri.oneriler[durum.oneriSira];
+  if (!o) return;
+  durum.oneriSecimi = true;
+  await yalnizcaSiteSec(o.site);
+  durum.modelSec = o.model ? { site: o.site, model: o.model } : null;
+  durum.oneriUygulandi = true;
+}
+
+async function oneriDegistir() {
+  const adet = durum.oneri ? durum.oneri.oneriler.length : 0;
+  if (adet < 2) return;
+  durum.oneriSira = (durum.oneriSira + 1) % adet;
+  if (durum.oneriUygulandi) await oneriUygula();
+  oneriCiz();
+}
+
+function oneriCiz() {
+  const v = durum.oneri;
+  const o = v && v.oneriler[durum.oneriSira];
+  oneriSeridi.innerHTML = "";
+  if (!o || durum.siteSohbet) { oneriSeridi.hidden = true; return; }
+  const satir = el("div", "oneri-satir");
+  const site = siteBul(o.site);
+  if (site) satir.append(nokta(site.renk));
+  const etiket = !durum.oneriUygulandi ? "Önerilen" : durum.ayarlar.otomatik_yonlendirme ? "Otomatik seçildi" : "Uygulandı";
+  satir.append(el("span", "", `${etiket}: `), el("b", "", o.site_ad + (o.model ? ` · ${o.model}` : "")),
+    el("span", "soluk", ` (${v.zorluk_ad} · ${v.tur_ad}${v.kaynak === "jev" ? " · Jev" : ""})`));
+  if (!o.model && o.model_notu) {
+    const not = el("span", "soluk oneri-not", `Model seçilmeyecek: ${o.model_notu}`);
+    not.title = not.textContent;
+    satir.append(not);
+  }
+  const uygula = el("button", "", durum.oneriUygulandi ? "Uygulandı ✓" : "Uygula");
+  uygula.disabled = durum.oneriUygulandi;
+  uygula.addEventListener("click", async () => { await oneriUygula(); oneriCiz(); });
+  satir.append(uygula);
+  if (v.oneriler.length > 1) {
+    const degistir = el("button", "", "Değiştir"); degistir.title = "Sıradaki öneriye geç";
+    degistir.addEventListener("click", oneriDegistir);
+    satir.append(degistir);
+  }
+  oneriSeridi.append(satir);
+  oneriSeridi.hidden = false;
+}
+
+// Ayarlar → Yönlendirme: kural tablosunun salt okunur görünümü, dosya yolu ve son sınıflandırma.
+async function yonlendirmeSekmesiniDoldur() {
+  const tablo = $("#yonlendirmeTablo"), son = $("#yonlendirmeSon");
+  try {
+    const v = await api("/api/yonlendirme");
+    $("#yonlendirmeDosya").textContent = v.dosya;
+    son.textContent = v.son
+      ? `Son sınıflandırma: ${v.son.tur_ad} · ${v.son.zorluk_ad} (${v.son.kaynak === "jev" ? "Jev" : "kurallar"}, saat ${v.son.zaman})`
+      : "Son sınıflandırma: henüz yok. Yazı kutusuna bir mesaj yazmaya başlayınca burada görünür.";
+    $("#yonlendirmeUyari").textContent = (v.uyarilar || []).join(" ");
+    tablo.innerHTML = "";
+    const ust = el("tr");
+    ["Tür", "Basit", "Orta", "Zor"].forEach((b) => ust.append(el("th", "", b)));
+    tablo.append(ust);
+    const turler = [...new Set(v.tablo.map((r) => r.tur))];
+    for (const tur of turler) {
+      const satir = el("tr");
+      const satirlar = v.tablo.filter((r) => r.tur === tur);
+      satir.append(el("td", "tur", satirlar[0].tur_ad));
+      for (const r of satirlar) {
+        const hucre = el("td", v.son && v.son.tur === r.tur && v.son.zorluk === r.zorluk ? "son" : "");
+        hucre.textContent = r.tercihler.map((t) => `${t.site_ad} · ${t.model_icerir}`).join("  ›  ");
+        satir.append(hucre);
+      }
+      tablo.append(satir);
+    }
+  } catch (h) {
+    son.textContent = `Yönlendirme kuralları okunamadı: ${h.message}`;
+  }
+}
+
+$("#yonlendirmeAc").addEventListener("click", async () => {
+  try {
+    const v = await api("/api/yonlendirme-ac", {});
+    bildir(`yonlendirme.json açılıyor: ${v.dosya}`, 6000);
+  } catch (h) { bildir(h.message, 8000); }
+});
+$('.ayarlar-sekmeler button[data-sekme="yonlendirme"]').addEventListener("click", yonlendirmeSekmesiniDoldur);
+$("#ayarHassasUyari").addEventListener("change", (e) => ayarKaydet({ hassas_uyari: e.target.checked }));
+$("#ayarOtomatikYonlendirme").addEventListener("change", (e) => {
+  ayarKaydet({ otomatik_yonlendirme: e.target.checked });
+  if (e.target.checked) oneriPlanla(); else { durum.oneriUygulandi = false; if (durum.oneri) oneriCiz(); }
+});
+mesajKutusu.addEventListener("input", () => {
+  if (hassasMetin !== null && mesajKutusu.value.trim() !== hassasMetin) hassasSeridiGizle();
+  oneriPlanla();
+});
+
 // ---------------------------------------------------------------- olaylar
 
 function boyutla() {
@@ -669,7 +887,7 @@ mesajKutusu.addEventListener("input", boyutla);
 mesajKutusu.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); gonder(); }
 });
-$("#gonder").addEventListener("click", gonder);
+$("#gonder").addEventListener("click", () => gonder());  // olay nesnesi onayli sanılmasın
 $("#yeniSohbet").addEventListener("click", yeniSohbet);
 $("#ara").addEventListener("input", sohbetListesiCiz);
 $("#sohbetYenile").addEventListener("click", async () => {
@@ -742,6 +960,73 @@ document.addEventListener("keydown", (e) => {
   else if (ctrl && e.shiftKey && e.key.toLowerCase() === "d") { e.preventDefault(); diz(); }
   else if (e.key === "Escape" && !$("#ayarlar").open && !$("#programEkle").open) mesajKutusu.focus();
 });
+
+// ---------------------------------------------------------------- Hafıza OS (Ayarlar → Hafıza)
+
+// Mesaj balonunun altında katlanabilir "Hafızadan eklenen bağlam (N karakter)"; metin siteye giden bağlamın aynısıdır.
+function baglamKutusu(b) {
+  const kok = el("details", "baglam");
+  kok.append(el("summary", "", `Hafızadan eklenen bağlam (${b.karakter ?? (b.metin || "").length} karakter)`),
+             el("pre", "", b.metin || ""));
+  return kok;
+}
+
+async function hafizaBolumunuDoldur() {
+  $("#ayarHafizaEkle").checked = durum.ayarlar.hafiza_ekle !== false;
+  $("#ayarHafizaAday").checked = durum.ayarlar.hafiza_aday !== false;
+  const d = $("#hafizaDurum");
+  try {
+    const h = await api("/api/hafiza-durum");
+    let metin, hata = false;
+    if (!h.kasa_var) { metin = "Hafıza kasası bulunamadı; mesajlar bağlamsız gider."; hata = true; }
+    else if (!h.hafiza_py_var) { metin = "Kasada araclar/hafiza.py bulunamadı; mesajlar bağlamsız gider."; hata = true; }
+    else if (h.son_hata) { metin = `Son denemede sorun: ${h.son_hata}`; hata = true; }
+    else if (h.son_mod) metin = `Hazır. Son sorgu modu: ${h.son_mod}.`;
+    else metin = "Hazır (henüz sorgu yapılmadı).";
+    d.textContent = `Durum: ${metin}`;
+    d.classList.toggle("hata", hata);
+    $("#hafizaKasa").textContent = `Kasa: ${h.kasa}`;
+  } catch (e) {
+    d.textContent = `Durum okunamadı: ${e.message}`;
+    d.classList.add("hata");
+  }
+}
+
+$("#ayarHafizaEkle").addEventListener("change", (e) => ayarKaydet({ hafiza_ekle: e.target.checked }));
+$("#ayarHafizaAday").addEventListener("change", (e) => ayarKaydet({ hafiza_aday: e.target.checked }));
+$('.ayarlar-sekmeler button[data-sekme="hafiza"]').addEventListener("click", hafizaBolumunuDoldur);
+
+// ---------------------------------------------------------------- Jev (Ayarlar → Jev)
+
+async function jevBolumunuDoldur() {
+  $("#ayarJevAcik").checked = durum.ayarlar.jev_acik !== false;
+  $("#ayarJevPuanla").checked = Boolean(durum.ayarlar.jev_yanit_puanla);
+  const d = $("#jevDurum"), ayrinti = $("#jevAyrinti");
+  try {
+    const j = await api("/api/jev-durum");
+    let metin, hata = false;
+    if (!j.acik) metin = "Kapalı; hassas bilgi uyarısı ve yönlendirme kurallarla çalışır.";
+    else if (j.hazir) metin = "Hazır (anahtar dosyası bulundu).";
+    else { metin = `Hazır değil, kurallarla çalışılıyor. ${j.sebep || ""}`; hata = true; }
+    d.textContent = `Durum: ${metin}`;
+    d.classList.toggle("hata", hata);
+    const parcalar = [`Anahtar dosyası: ${j.anahtar_dosyasi_bulundu ? "bulundu" : "bulunamadı"}`];
+    if (j.model) parcalar.push(`Model: ${j.model}`);
+    parcalar.push(j.son_cagri
+      ? `Son çağrı: ${j.son_cagri.replace("T", " ")} · ${j.son_sonuc === "basarili" ? "başarılı" : `hata (${j.son_hata || "bilinmiyor"})`}` +
+        ` · toplam ${j.cagri_sayisi} (${j.basarili} başarılı, ${j.hatali} hatalı)`
+      : "Son çağrı: henüz yok");
+    parcalar.push(`Ayar dosyası: ${j.ayar_dosyasi}`);
+    ayrinti.textContent = parcalar.join(" · ");
+  } catch (e) {
+    d.textContent = `Durum okunamadı: ${e.message}`;
+    d.classList.add("hata");
+  }
+}
+
+$("#ayarJevAcik").addEventListener("change", async (e) => { await ayarKaydet({ jev_acik: e.target.checked }); jevBolumunuDoldur(); });
+$("#ayarJevPuanla").addEventListener("change", (e) => ayarKaydet({ jev_yanit_puanla: e.target.checked }));
+$('.ayarlar-sekmeler button[data-sekme="jev"]').addEventListener("click", jevBolumunuDoldur);
 
 (async function baslat() {
   try { await yenile(); } catch (h) { bildir(`Arka uca ulaşılamadı: ${h.message}`, 10000); }

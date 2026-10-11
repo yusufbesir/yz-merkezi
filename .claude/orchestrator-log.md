@@ -15,6 +15,12 @@
 | 2026-10-11 15:50 | Güvenlik düzeltmelerinin bağımsız doğrulaması ve sızma denemeleri | verifier / claude-sonnet-5-5 | 189.099 | GEÇTİ: 217 test OK |
 | 2026-10-11 14:28 | Jev karar modeli için karar noktaları taraması (salt okunur) | scout / claude-haiku-5-5 | 214.409 | tamam: 7 karar noktası; öneri hassas bilgi sınıflandırması ve yanıt puanlama |
 | 2026-10-11 14:30 | Uygulama simgesi tasarımı (SVG/ICO), favicon ve masaüstü kısayolu | implementer / claude-sonnet-5-5 | 167.541 | tamam: 224 test geçti, kısayol oluşturuldu, commit |
+| 2026-10-11 14:50 | Site model menüsü JS (model_listesi, model_sec) | implementer / claude-sonnet-5-5 | 231.171 | tamam: 244 test, sahte menüde gerçek Edge testi |
+| 2026-10-11 14:50 | Jev uzak istemci + hafıza (tek ajan) | implementer / claude-opus-5-5 | - | BAŞLATILAMADI: otomatik mod sınıflandırıcısı "veri sızdırma" gerekçesiyle reddetti; yerel parçalara bölündü |
+| 2026-10-11 14:52 | Kural tabanlı hassas bilgi uyarısı + yönlendirici + model seçimi bağlantısı | implementer / claude-sonnet-5-5 | - | tamam: hassas.py, yonlendirici.py, 357 test; yan etki: test sırasında bir kez gerçek site giriş sayfaları açıldı (giriş/yazma yok) |
+| 2026-10-11 15:05 | Jev uzak istemcisi (kullanıcının açık onayıyla yeniden deneme) | implementer / claude-opus-5-5 | - | çalışıyor |
+| 2026-10-11 14:52 | Hafıza OS köprüsü (yerel CLI okuma, aday yazımı) | implementer / claude-sonnet-5-5 | 253.499 | tamam: hafiza_kopru.py, 274 test |
+| 2026-10-11 14:50 | Hermes Agent raporu (web araştırması, Türkçe HTML) | araştırma / claude-sonnet-5-5 | 232.155 | tamam: 45 kaynak, Artifact olarak yayımlandı |
 | 2026-10-11 14:36 | Hermes Agent web araştırması | scout / claude-haiku-5-5 | 140.025 | tamam: Nous Research açık kaynak ajan; anahtar gerekli (OpenRouter/Nous/OpenAI) ya da Ollama; HTTP API 127.0.0.1:8642; terminal erişimi riski |
 | 2026-10-11 14:36 | Hafıza OS dış arayüzleri (hafiza.py context, Mem0, Jev yapılandırması) | hafiza-okuyucu / claude-haiku-5-5 | 45.550 | tamam: sorgu `hafiza.py context`, yazma aday kuyruğu + sync, Jev uzak (Vercel) |, 57/57 sızma denemesi beklenen sonucu verdi, borulu Edge'de dinlenen port yok |
 | 2026-10-11 14:20 | Güvenlik grubu C: pano korumaları, pencere eşleşmesi, site JS yedeklerinin kaldırılması, depo/test korumaları | implementer / claude-sonnet-5-5 | 274.538 | tamam; CSP/sahte site ve API arayüzü innerHTML işleri grup A'ya devredildi |
