@@ -17,6 +17,15 @@ user32.GetForegroundWindow.restype = wintypes.HWND
 user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
 user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT]
 kernel32.OpenProcess.restype = wintypes.HANDLE
+# 64 bit işaretçiler ctypes'ın varsayılan 32 bit int dönüşüne sığmaz; tipler açıkça verilmeli.
+kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
+kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+kernel32.GlobalLock.restype = ctypes.c_void_p
+kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+user32.SetClipboardData.restype = wintypes.HANDLE
+user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
+user32.OpenClipboard.argtypes = [wintypes.HWND]
 
 SW_RESTORE = 9
 SWP_NOZORDER = 0x0004
@@ -183,6 +192,27 @@ def konum_hesapla(dortgen, nokta):
     """giris_noktasi'nın tersi: fare noktasından pencereye göre konum çıkarır."""
     sol, _, sag, alt = dortgen
     return {"oran_x": round((nokta[0] - sol) / max(1, sag - sol), 3), "alttan": alt - nokta[1]}
+
+
+def panoya_yaz(metin):
+    """Yazıyı Windows panosuna koyar (Ctrl+V ile yapıştırılabilsin diye)."""
+    GMEM_MOVEABLE, CF_UNICODETEXT = 0x0002, 13
+    veri = metin.encode("utf-16-le") + b"\x00\x00"
+    for _ in range(10):  # başka bir program panoyu tutuyorsa kısa süre bekle
+        if user32.OpenClipboard(None):
+            break
+        time.sleep(0.05)
+    else:
+        raise PencereHatasi("pano başka bir program tarafından kilitli")
+    try:
+        user32.EmptyClipboard()
+        tutamac = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(veri))
+        adres = kernel32.GlobalLock(tutamac)
+        ctypes.memmove(adres, veri, len(veri))
+        kernel32.GlobalUnlock(tutamac)
+        user32.SetClipboardData(CF_UNICODETEXT, tutamac)
+    finally:
+        user32.CloseClipboard()
 
 
 def fare_konumu():

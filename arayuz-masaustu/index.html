@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Yapay Zeka Merkezi</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='7' fill='%23d97757'/></svg>">
+  <link rel="stylesheet" href="stil.css">
+</head>
+<body>
+  <aside id="kenar" class="kenar">
+    <div class="kenar-ust">
+      <button class="simge" id="kenarKapat" title="Kenar çubuğunu gizle (Ctrl+B)">☰</button>
+      <span class="kenar-marka">Yapay Zeka Merkezi</span>
+    </div>
+    <button class="kenar-yeni" id="yeniSohbet"><span class="arti">+</span> Yeni sohbet</button>
+    <div class="kenar-ara"><span>⌕</span><input id="ara" placeholder="Sohbet ara"></div>
+    <nav class="kenar-nav">
+      <button data-bolum="sohbetler" class="aktif">💬 Sohbetler</button>
+      <button data-bolum="programlar">▦ Programlar</button>
+    </nav>
+    <div class="kenar-baslik">Programlar</div>
+    <div id="kenarProgramlar" class="kenar-programlar"></div>
+    <div class="kenar-baslik">Son sohbetler</div>
+    <div id="sohbetListesi" class="sohbet-listesi"></div>
+    <div class="kenar-alt">
+      <button id="ayarlarAc" class="kenar-kullanici">
+        <span class="avatar" id="avatar">Y</span>
+        <span class="kullanici-ad" id="kullaniciAd">Yusuf</span>
+        <span class="soluk">Ayarlar</span>
+      </button>
+    </div>
+  </aside>
+
+  <main class="ana">
+    <header class="ust">
+      <button class="simge" id="kenarAc" title="Kenar çubuğunu göster" hidden>☰</button>
+      <div class="ust-baslik" id="ustBaslik">Yeni sohbet</div>
+      <div class="ust-araclar">
+        <button id="hepsiniAc" title="Kapalı programları aç">Hepsini aç</button>
+        <button id="diz" title="Programları ekranda yan yana diz">Yan yana diz</button>
+        <button class="simge" id="sohbetMenu" title="Sohbet seçenekleri">⋯</button>
+      </div>
+    </header>
+
+    <section id="icerik" class="icerik">
+      <div id="karsilama" class="karsilama">
+        <div class="karsilama-logo">✦</div>
+        <h1 id="selam">Günaydın, Yusuf</h1>
+      </div>
+      <div id="mesajlar" class="mesajlar"></div>
+    </section>
+
+    <footer class="yazma-alani">
+      <div class="yazici">
+        <textarea id="mesaj" rows="1" placeholder="Yapay zekalara ne sormak istersin?"></textarea>
+        <div class="yazici-alt">
+          <div class="yazici-sol">
+            <button class="simge yuvarlak" id="ekleMenu" title="Program ekle">+</button>
+            <button class="simge yuvarlak" id="dizKucuk" title="Yan yana diz">▦</button>
+          </div>
+          <div class="yazici-sag">
+            <div class="hedef-secici">
+              <button id="hedefDugme" class="hedef-dugme"><span id="hedefOzet">3 program</span> <span class="ok">⌄</span></button>
+              <div id="hedefMenu" class="hedef-menu" hidden></div>
+            </div>
+            <button id="gonder" class="gonder" title="Gönder (Enter)">↑</button>
+          </div>
+        </div>
+      </div>
+      <div class="yazma-not" id="durumSatiri">Mesaj, işaretli programların hepsine aynı anda gider.</div>
+    </footer>
+  </main>
+
+  <!-- Ayarlar -->
+  <dialog id="ayarlar" class="ayarlar">
+    <div class="ayarlar-govde">
+      <nav class="ayarlar-sekmeler">
+        <div class="ayarlar-baslik">Ayarlar</div>
+        <button data-sekme="genel" class="aktif">Genel</button>
+        <button data-sekme="gorunum">Görünüm</button>
+        <button data-sekme="programlar">Programlar</button>
+        <button data-sekme="kisayollar">Kısayollar</button>
+        <button data-sekme="hakkinda">Hakkında</button>
+      </nav>
+      <div class="ayarlar-icerik">
+        <button class="simge ayarlar-kapat" id="ayarlarKapat" title="Kapat (Esc)">✕</button>
+
+        <section data-sekme="genel">
+          <h2>Genel</h2>
+          <div class="ayar-satir"><div><b>Adın</b><small>Karşılama mesajında kullanılır.</small></div><input id="ayarAd" maxlength="30"></div>
+          <div class="ayar-satir"><div><b>Enter'a da bas</b><small>Kapalıysa mesaj yalnızca yapıştırılır, göndermeyi sen yaparsın.</small></div><label class="anahtar"><input type="checkbox" id="ayarEnter"><span></span></label></div>
+          <div class="ayar-satir"><div><b>Gönderince kutuyu temizle</b><small>Mesaj gittikten sonra yazı kutusu boşalır.</small></div><label class="anahtar"><input type="checkbox" id="ayarTemizle"><span></span></label></div>
+          <div class="ayar-satir"><div><b>Yerleşim</b><small>"Yan yana diz" komutunda bu pencere nerede dursun?</small></div>
+            <select id="ayarYerlesim"><option value="sol">Solda sütun</option><option value="alt">Altta çubuk</option></select></div>
+        </section>
+
+        <section data-sekme="gorunum" hidden>
+          <h2>Görünüm</h2>
+          <div class="ayar-satir"><div><b>Tema</b><small>Açık, koyu ya da Windows ayarını izle.</small></div>
+            <div class="secenek-grubu" id="ayarTema">
+              <button data-deger="acik">Açık</button><button data-deger="koyu">Koyu</button><button data-deger="sistem">Sistem</button>
+            </div></div>
+          <div class="ayar-satir"><div><b>Yazı boyutu</b></div>
+            <div class="secenek-grubu" id="ayarYazi">
+              <button data-deger="kucuk">Küçük</button><button data-deger="orta">Orta</button><button data-deger="buyuk">Büyük</button>
+            </div></div>
+        </section>
+
+        <section data-sekme="programlar" hidden>
+          <h2>Programlar</h2>
+          <p class="aciklama">Mesajların gideceği programlar. Bir programda mesaj yanlış yere giderse "Yazı kutusunu öğret"e basıp 4 saniye içinde fareyi o programın yazı kutusunun üstüne getir.</p>
+          <div id="programAyarListesi" class="program-listesi"></div>
+          <button id="programEkleAc" class="birincil">+ Program ekle</button>
+        </section>
+
+        <section data-sekme="kisayollar" hidden>
+          <h2>Kısayollar</h2>
+          <table class="kisayollar">
+            <tr><td>Gönder</td><td><kbd>Enter</kbd></td></tr>
+            <tr><td>Yeni satır</td><td><kbd>Shift</kbd> + <kbd>Enter</kbd></td></tr>
+            <tr><td>Yeni sohbet</td><td><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>O</kbd></td></tr>
+            <tr><td>Kenar çubuğunu aç/kapat</td><td><kbd>Ctrl</kbd> + <kbd>B</kbd></td></tr>
+            <tr><td>Ayarlar</td><td><kbd>Ctrl</kbd> + <kbd>,</kbd></td></tr>
+            <tr><td>Yan yana diz</td><td><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>D</kbd></td></tr>
+            <tr><td>Yazı kutusuna odaklan</td><td><kbd>Esc</kbd></td></tr>
+          </table>
+        </section>
+
+        <section data-sekme="hakkinda" hidden>
+          <h2>Hakkında</h2>
+          <p class="aciklama">Yapay Zeka Merkezi, bilgisayarında kurulu ChatGPT, Gemini ve Claude programlarını tek ekrandan kullanmanı sağlar. API anahtarı kullanmaz; programlar kendi hesaplarınla çalışır. Ayarlar <code>masaustu-ayarlar.json</code> dosyasında durur.</p>
+        </section>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Program ekle -->
+  <dialog id="programEkle" class="kucuk-pencere">
+    <h2>Program ekle</h2>
+    <p class="aciklama">Yeni yapay zeka programını (ya da tarayıcıda açık bir sohbet sitesini) aç, sonra listeden seç.</p>
+    <div class="form">
+      <label>Açık pencere <select id="pencereSecimi"></select></label>
+      <label>Görünecek ad <input id="yeniAd" placeholder="ör. Grok"></label>
+      <label id="baslikAlani" hidden>Pencere başlığında hep geçen kelime <input id="yeniBaslik" placeholder="ör. Grok"></label>
+    </div>
+    <div class="dugmeler"><button id="programEkleIptal">Vazgeç</button><button id="programEkleTamam" class="birincil">Ekle</button></div>
+  </dialog>
+
+  <div id="bildirim" class="bildirim" hidden></div>
+  <script src="uygulama.js"></script>
+</body>
+</html>

@@ -1,4 +1,3 @@
 @echo off
 cd /d "%~dp0"
-start "" pythonw masaustu.pyw
-
+start "" pythonw masaustu_sunucu.py
