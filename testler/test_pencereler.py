@@ -108,11 +108,65 @@ class PencereEslesmeGuvenligiTesti(unittest.TestCase):
         self.assertIsNone(pc.pencere_bul_kesin(chatgpt, []))
 
 
+def pano_ortam_kisiti_mi(hata_kodu, tutan_pencere):
+    """Pano açılamadığında bunun ortam kısıtı olup olmadığına karar verir.
+
+    Yalnızca dar koşul ortam kısıtıdır: ERROR_ACCESS_DENIED (5) VE panoyu tutan bir pencere yok (bütünlük
+    etiketsiz token). Başka bir program panoyu tutuyorsa (pencere var) ya da hata kodu farklıysa gerçek hatadır.
+    """
+    return hata_kodu == 5 and not tutan_pencere
+
+
+class PanoOrtamKisitiAyrimiTesti(unittest.TestCase):
+    """Atlama kararı yalnızca dar koşulda verilmeli; diğer pano hataları test hatası kalmalı."""
+
+    def test_erisim_reddi_ve_tutan_pencere_yoksa_ortam_kisiti(self):
+        self.assertTrue(pano_ortam_kisiti_mi(5, None))
+        self.assertTrue(pano_ortam_kisiti_mi(5, 0))
+
+    def test_baska_program_tutuyorsa_gercek_hata(self):
+        self.assertFalse(pano_ortam_kisiti_mi(5, 123456))   # tutan pencere var: başka bir program kilitlemiş
+
+    def test_farkli_hata_kodu_gercek_hata(self):
+        self.assertFalse(pano_ortam_kisiti_mi(0, None))
+        self.assertFalse(pano_ortam_kisiti_mi(1418, None))  # ERROR_CLIPBOARD_NOT_OPEN
+
+    def test_setup_dar_kosul_disinda_atlamaz(self):
+        # panoyu_oku hata verse bile koşul dar değilse setUp atlamaz, hatayı yükseltir.
+        class Sahte(PanoGizliligiTesti):
+            def runTest(self):
+                pass
+        sahte = Sahte()
+        orijinal_oku, orijinal_pencere = pc.panoyu_oku, pc.user32.GetOpenClipboardWindow
+        try:
+            def kilitli():
+                ctypes.set_last_error(5)
+                raise pc.PencereHatasi("pano başka bir program tarafından kilitli")
+            pc.panoyu_oku = kilitli
+            pc.user32.GetOpenClipboardWindow = lambda: 123456   # başka program tutuyor
+            with self.assertRaises(pc.PencereHatasi):
+                sahte.setUp()
+            pc.user32.GetOpenClipboardWindow = lambda: 0
+            with self.assertRaises(unittest.SkipTest):           # dar koşul: atlanır
+                sahte.setUp()
+        finally:
+            pc.panoyu_oku, pc.user32.GetOpenClipboardWindow = orijinal_oku, orijinal_pencere
+
+
 class PanoGizliligiTesti(unittest.TestCase):
     """Gerçek Windows panosunu kullanır; başlamadan önceki metni geri koyar."""
 
     def setUp(self):
-        self.yedek = pc.panoyu_oku()
+        try:
+            self.yedek = pc.panoyu_oku()
+        except pc.PencereHatasi as h:
+            # Dar koşulda (hata 5 ve tutan pencere yok) ortam kısıtıdır: test ATLANIR ve nedeni çıktıya yazılır.
+            # Diğer pano hataları (başka program tutuyor vb.) gerçek test hatası olarak yükselir.
+            hata_kodu = ctypes.get_last_error()
+            tutan = pc.user32.GetOpenClipboardWindow()
+            if pano_ortam_kisiti_mi(hata_kodu, tutan):
+                self.skipTest(f"pano bu oturumda erişilemez (ortam kısıtı, hata {hata_kodu}, tutan pencere yok): {h}")
+            raise
         self.addCleanup(pc.panoyu_geri_yukle, self.yedek)
 
     @staticmethod

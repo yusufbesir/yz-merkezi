@@ -46,8 +46,12 @@ OPENAI_SOHBET_DISI = re.compile(
 
 AYAR_KILIDI = threading.Lock()
 bulunan_yereller = {}
-# İstek belirteci: açılışta bir kez üretilir, yalnızca bellekte durur; arayüz adreste (#t=) alır.
+# İstek belirteci: açılışta bir kez üretilir, yalnızca bellekte durur. Tarayıcı komut satırına (webbrowser.open)
+# belirteç değil, tek kullanımlık kısa ömürlü bir açılış kodu (/ac/<kod>) gider; sunucu kodu tüketip belirteci
+# HttpOnly; SameSite=Strict çerezine koyar. Arayüz JavaScript'i belirteci görmez.
 BELIRTEC = guvenlik.yeni_belirtec()
+ACILIS_KODLARI = guvenlik.AcilisKodlari()
+ELLE_ACILIS_SURESI = 300  # sn: --tarayici-acma ile ekrana yazılan açılış bağlantısının geçerliliği
 
 
 class SaglayiciHatasi(Exception):
@@ -374,6 +378,23 @@ class Isleyici(guvenlik.GuvenlikKarisimi, BaseHTTPRequestHandler):
     def _beklenen_belirtec(self):
         return BELIRTEC
 
+    def _cerez_kabul_edilir_mi(self):
+        """Çerezle gelen istekte CSRF denetimi (Host/Origin _guvenli_mi'de): Sec-Fetch-Site varsa same-origin olmalı."""
+        site = self.headers.get("Sec-Fetch-Site")
+        return site is None or site.strip().lower() == "same-origin"
+
+    def _acilis(self, kod):
+        """GET /ac/<kod>: tek kullanımlık açılış kodunu tüketir, belirteci HttpOnly çereze koyup /'a yönlendirir."""
+        if not ACILIS_KODLARI.tuket(kod):
+            guvenlik.hata_yaz("Geçersiz ya da tükenmiş açılış kodu reddedildi (/ac/, API sürümü)")
+            return self._json({"hata": "Açılış bağlantısı geçersiz ya da süresi dolmuş. baslat-api.bat ile yeniden açın."}, 403)
+        self.send_response(302)
+        self.send_header("Set-Cookie", guvenlik.oturum_cerezi(BELIRTEC))
+        self.send_header("Location", "/")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def _api_izni_yok(self, yol, govde_var=False):
         """/api/* isteği belirteçsiz ya da yanlış belirteçliyse 403 yanıtlar (True döner). /api/kimlik hariç."""
         if not yol.startswith("/api/") or yol == "/api/kimlik":
@@ -406,6 +427,8 @@ class Isleyici(guvenlik.GuvenlikKarisimi, BaseHTTPRequestHandler):
         if not self._guvenli_mi():
             return self._json({"hata": "İzin verilmeyen istek."}, 403)
         yol = urlparse(self.path)
+        if yol.path.startswith("/ac/"):
+            return self._acilis(yol.path[len("/ac/"):])
         if self._api_izni_yok(yol.path):
             return
         if yol.path == "/api/kimlik":
@@ -569,14 +592,14 @@ def main():
         print(f"{sayi} eski düz metin API anahtarı DPAPI ile şifrelendi.")
     threading.Thread(target=yerelleri_tara, daemon=True).start()
     adres = f"http://127.0.0.1:{PORT}"
-    # Belirteç adresin parçasında (#t=) gider; parça sunucuya gönderilmez, arayüz okuyup adresten siler.
-    belirtecli = f"{adres}/#t={BELIRTEC}"
     print(f"Yapay Zeka Merkezi çalışıyor: {adres}")
     print("Kapatmak için bu pencerede Ctrl+C tuşlarına basın.")
+    # Tarayıcı komut satırına belirteç değil, tek kullanımlık açılış kodu gider (bkz. ACILIS_KODLARI).
     if "--tarayici-acma" not in sys.argv:
-        webbrowser.open(belirtecli)
+        webbrowser.open(f"{adres}/ac/{ACILIS_KODLARI.uret()}")
     else:
-        print(f"Tarayıcıda şu adresi aç (oturum belirteci içerir, kimseyle paylaşma): {belirtecli}")
+        print(f"Tarayıcıda {ELLE_ACILIS_SURESI // 60} dakika içinde şu adresi aç (tek kullanımlık): "
+              f"{adres}/ac/{ACILIS_KODLARI.uret(sure=ELLE_ACILIS_SURESI)}")
     try:
         sunucu.serve_forever()
     except KeyboardInterrupt:

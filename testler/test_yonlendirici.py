@@ -187,6 +187,61 @@ class KuralDosyasiTesti(unittest.TestCase):
         self.assertEqual(satir["tercihler"][0], {"motor": "claude", "motor_ad": "Claude", "sinif": "hizli", "sinif_ad": "hızlı"})
 
 
+class KullaniciKopyasiTesti(unittest.TestCase):
+    """yonlendirme.json kullanıcı veri klasöründedir; güncelleme (şablonun değişmesi) kullanıcı kopyasına dokunmaz."""
+
+    def setUp(self):
+        import os
+        from unittest import mock
+        self.klasor = Path(tempfile.mkdtemp(prefix="yzyon_"))
+        self.addCleanup(__import__("shutil").rmtree, self.klasor, True)
+        self.kopya = self.klasor / "veri" / "yonlendirme.json"
+        self.sablon = self.klasor / "paket" / "yonlendirme.json"
+        self.sablon.parent.mkdir()
+        self.sablon.write_bytes((y.KOK / "yonlendirme.json").read_bytes())
+        for yama in (mock.patch.dict(os.environ, {"YZ_YONLENDIRME": str(self.kopya)}),
+                     mock.patch.object(y, "YONLENDIRME_DOSYASI", self.kopya),
+                     mock.patch.object(y, "SABLON_DOSYASI", self.sablon)):
+            yama.start()
+            self.addCleanup(yama.stop)
+
+    def test_varsayilan_yol_veri_klasorunde(self):
+        import os
+        from unittest import mock
+        with mock.patch.dict(os.environ, {"YZ_YONLENDIRME": "", "YZ_VERI_KLASORU": str(self.klasor / "v")}):
+            self.assertEqual(y.varsayilan_yonlendirme_dosyasi(), self.klasor / "v" / "yonlendirme.json")
+        self.assertNotEqual(y.varsayilan_yonlendirme_dosyasi().parent, y.KOK)
+
+    def test_ilk_okumada_sablon_kopyalanir(self):
+        self.assertFalse(self.kopya.exists())
+        k, uyarilar = y.kurallari_yukle()
+        self.assertEqual(uyarilar, [])
+        self.assertEqual(self.kopya.read_bytes(), self.sablon.read_bytes())
+        self.assertEqual(k["varsayilan"]["basit"][0]["motor"], "gemini")
+
+    def test_guncelleme_sonrasi_kullanici_kopyasi_aynen_kalir(self):
+        y.kurallari_yukle()
+        kullanici = json.loads(self.kopya.read_text("utf-8"))
+        kullanici["varsayilan"]["basit"] = [{"motor": "claude", "sinif": "hizli"}]
+        self.kopya.write_text(json.dumps(kullanici, ensure_ascii=False, indent=2), "utf-8")
+        once = self.kopya.read_bytes()
+        # yeni sürüm: paketteki şablon değişti (ör. varsayılan sıra başka)
+        yeni = json.loads(self.sablon.read_text("utf-8"))
+        yeni["varsayilan"]["basit"] = [{"motor": "codex", "sinif": "hizli"}]
+        self.sablon.write_text(json.dumps(yeni), "utf-8")
+        k, _ = y.kurallari_yukle()
+        y.kullanici_kopyasini_hazirla()
+        self.assertEqual(self.kopya.read_bytes(), once)
+        self.assertEqual(k["varsayilan"]["basit"][0]["motor"], "claude")
+
+    def test_sablon_yoksa_yerlesige_duser(self):
+        self.sablon.unlink()
+        k, uyarilar = y.kurallari_yukle()
+        self.assertFalse(self.kopya.exists())
+        self.assertTrue(uyarilar)
+        self.assertEqual(k["varsayilan"]["basit"][0]["motor"], "gemini")
+
+
 class OneriTesti(unittest.TestCase):
     def test_oner_bicimi(self):
         k, _ = y.kurallari_yukle(y.KOK / "yonlendirme.json")

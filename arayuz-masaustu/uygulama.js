@@ -20,30 +20,15 @@ const icerik = $("#icerik");
 const ALTTA_SINIRI = 90;   // px: kullanıcı bu kadar yakınsa "alttadır" ve yanıt akarken otomatik kaydırılır
 const bekle = (ms) => new Promise((coz) => setTimeout(coz, ms));
 
-// ---------------------------------------------------------------- istek belirteci
-// Sunucu belirteci adresin parçasında (#t=...) verir: sunucuya gitmez, burada sessionStorage'a alınır ve
-// adresten silinir. Her /api/ isteği X-YZ-Token başlığıyla gider; belirteçsiz istekler 403 alır.
-const BELIRTEC_ANAHTARI = "yzm.belirtec";
-let bellekBelirteci = "";
-(function belirteciAl() {
-  const m = /[#&]t=([A-Za-z0-9_-]+)/.exec(location.hash);
-  if (m) {
-    bellekBelirteci = m[1];
-    try { sessionStorage.setItem(BELIRTEC_ANAHTARI, m[1]); } catch (_) { /* saklanamazsa bellekte kalır */ }
-    history.replaceState(null, "", location.pathname + location.search);
-  }
-})();
-function belirtec() {
-  if (bellekBelirteci) return bellekBelirteci;
-  try { return sessionStorage.getItem(BELIRTEC_ANAHTARI) || ""; } catch (_) { return ""; }
-}
+// ---------------------------------------------------------------- oturum
+// Oturum belirteci bu sayfaya HİÇ gelmez: sunucu, Edge'i tek kullanımlık açılış koduyla (/ac/<kod>) açar ve belirteci
+// HttpOnly; SameSite=Strict çerezine koyar. /api/ istekleri yalnızca bu çerezle (aynı köken) gider.
 
 // ---------------------------------------------------------------- yardımcılar
 
 async function api(yol, govde) {
-  const basliklar = { "X-YZ-Token": belirtec() };
-  const secenek = govde === undefined ? { headers: basliklar }
-    : { method: "POST", headers: { ...basliklar, "Content-Type": "application/json" }, body: JSON.stringify(govde) };
+  const secenek = govde === undefined ? { credentials: "same-origin" }
+    : { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify(govde) };
   const yanit = await fetch(yol, secenek);
   const veri = await yanit.json().catch(() => ({}));
   if (!yanit.ok || veri.hata) throw new Error(veri.hata || `Sunucu hatası (${yanit.status})`);
@@ -596,8 +581,9 @@ async function akisiOku(yanit, isle) {
 /**
  * Mesajı sunucuya gönderip yanıtı akıtır.
  * yeniden: aynı soru başka bir motora yeniden sorulur (sunucu son soru-yanıt çiftini değiştirir); onayli: hassas uyarıda "Yine de gönder".
+ * baglamKarari: "ekle" | "ekleme" (hafıza bağlamı onay panelinden); baglamKimligi: sunucunun gösterdiği bağlamın kimliği.
  */
-async function gonder({ metin = null, motor = null, yeniden = false, onayli = false } = {}) {
+async function gonder({ metin = null, motor = null, yeniden = false, onayli = false, baglamKarari = null, baglamKimligi = null } = {}) {
   metin = (metin ?? mesajKutusu.value).trim();
   if (!metin || durum.akis) return;
   motor = motor || durum.motorSecimi;
@@ -632,7 +618,27 @@ async function gonder({ metin = null, motor = null, yeniden = false, onayli = fa
         if (!yeniden) { mesajKutusu.value = metin; boyutla(); }
         hassasSeridiGoster(o, { metin, motor, yeniden });
         break;
+      case "baglam_onay":
+        onayIstendi = true;
+        blok.kok.remove();
+        if (kullaniciDugumu) kullaniciDugumu.remove();
+        if (bosSohbetti) $("#karsilama").hidden = false;
+        if (!yeniden) { mesajKutusu.value = metin; boyutla(); }
+        baglamOnayiGoster(o, { metin, motor, yeniden, onayli });
+        break;
+      case "hassas_uyari":
+        durumSatiri(`Not: bu mesaj ${o.aciklama} içeriyor; seçilen motorun şirketine gidecek.`);
+        break;
+      case "kayit":
+        // Geçmişe maskeli yazılan metinleri göster (ham anahtar/parola ekranda kalmasın).
+        if (kullaniciDugumu && typeof o.kullanici_metin === "string") {
+          const balon = kullaniciDugumu.querySelector(".balon");
+          if (balon) balon.textContent = o.kullanici_metin;
+        }
+        if (typeof o.asistan_metin === "string" && o.asistan_metin) toplam = o.asistan_metin;
+        break;
       case "secim":
+        if (o.jev_notu) durumSatiri(`Yönlendirme: ${o.jev_notu}.`);
         if (o.sohbet && !durum.sohbet) {
           durum.sohbet = o.sohbet; akis.sohbet = o.sohbet;
           $("#ustBaslik").textContent = metin.split("\n")[0].slice(0, 48);
@@ -653,8 +659,9 @@ async function gonder({ metin = null, motor = null, yeniden = false, onayli = fa
   try {
     const yanit = await fetch("/api/sor", {
       method: "POST", signal: kontrol.signal,
-      headers: { "X-YZ-Token": belirtec(), "Content-Type": "application/json" },
-      body: JSON.stringify({ metin, sohbet: durum.sohbet, motor, ...(yeniden ? { yeniden: true } : {}), ...(onayli ? { onayli: true } : {}) }),
+      credentials: "same-origin", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ metin, sohbet: durum.sohbet, motor, ...(yeniden ? { yeniden: true } : {}), ...(onayli ? { onayli: true } : {}),
+        ...(baglamKarari ? { baglam_karari: baglamKarari } : {}), ...(baglamKimligi ? { baglam_kimligi: baglamKimligi } : {}) }),
     });
     if (!yanit.ok) {
       const v = await yanit.json().catch(() => ({}));
@@ -718,6 +725,35 @@ function hassasSeridiGoster(o, istek) {
   hassasSeridi.replaceChildren(satir);
   hassasSeridi.hidden = false;
   durumSatiri("Göndermeden önce onay gerekiyor.", true);
+}
+
+// ---------------------------------------------------------------- hafıza bağlamı onayı
+
+// Hafıza OS bağlamı motora (dış sunucuya) gitmeden önce gösterilir: Ekleyerek gönder / Bağlamsız gönder / Vazgeç.
+// Ayarlar → Hafıza → "Hafıza bağlamı için her seferinde onay iste" kapalıysa sunucu bu olayı hiç göndermez.
+function baglamOnayiGoster(o, istek) {
+  hassasMetin = istek.metin;
+  const kutu = el("div", "hassas-satir baglam-onay");
+  const ayrinti = el("details", "baglam");
+  ayrinti.open = true;
+  ayrinti.append(el("summary", "", `Hafızadan şu bağlam eklenecek (${o.karakter ?? (o.baglam || "").length} karakter)`),
+    el("pre", "", o.baglam || ""));
+  const tekrar = (karar) => () => {
+    const degisti = mesajKutusu.value.trim() !== hassasMetin && !istek.yeniden;
+    hassasSeridiGizle();
+    if (degisti) { durumSatiri("Metin değişti; yeniden denetleniyor."); gonder({ motor: istek.motor }); return; }
+    gonder({ metin: istek.metin, motor: istek.motor, yeniden: istek.yeniden, onayli: istek.onayli,
+      baglamKarari: karar, baglamKimligi: karar === "ekle" ? o.baglam_kimligi : null });
+  };
+  const ekle = dugme("Ekleyerek gönder", "", tekrar("ekle"));
+  const eklemeden = dugme("Bağlamsız gönder", "", tekrar("ekleme"));
+  const vazgec = dugme("Vazgeç", "", () => { hassasSeridiGizle(); durumSatiri("Gönderme iptal edildi."); mesajKutusu.focus(); });
+  const dugmeler = el("div", "baglam-dugmeler");
+  dugmeler.append(ekle, eklemeden, vazgec);
+  kutu.append(ayrinti, dugmeler);
+  hassasSeridi.replaceChildren(kutu);
+  hassasSeridi.hidden = false;
+  durumSatiri("Hafıza bağlamı dışarı gitmeden önce onay gerekiyor.", true);
 }
 
 // ---------------------------------------------------------------- ayarlar penceresi
@@ -844,11 +880,15 @@ SEKME_ACILISLARI.yonlendirme = yonlendirmeSekmesiniDoldur;
 async function hafizaBolumunuDoldur() {
   $("#ayarHafizaEkle").checked = durum.ayarlar.hafiza_ekle !== false;
   $("#ayarHafizaAday").checked = durum.ayarlar.hafiza_aday !== false;
+  $("#ayarHafizaOnay").checked = durum.ayarlar.hafiza_onay !== false;
   const d = $("#hafizaDurum");
+  const onayDugmesi = $("#hafizaOnayla");
   try {
     const h = await api("/api/hafiza-durum");
     let metin, hata = false;
-    if (!h.kasa_var) { metin = "Hafıza kasası bulunamadı; mesajlar bağlamsız gider."; hata = true; }
+    onayDugmesi.hidden = !h.hash_degisti;
+    if (h.hash_degisti) { metin = `${h.hash_uyarisi}. Onaylayana kadar hafıza aracı çalıştırılmaz; mesajlar bağlamsız gider.`; hata = true; }
+    else if (!h.kasa_var) { metin = "Hafıza kasası bulunamadı; mesajlar bağlamsız gider."; hata = true; }
     else if (!h.hafiza_py_var) { metin = "Kasada araclar/hafiza.py bulunamadı; mesajlar bağlamsız gider."; hata = true; }
     else if (h.son_hata) { metin = `Son denemede sorun: ${h.son_hata}`; hata = true; }
     else if (h.son_mod) metin = `Hazır. Son sorgu modu: ${h.son_mod}.`;
@@ -988,6 +1028,13 @@ $("#ayarYerlesim").addEventListener("change", (e) => ayarKaydet({ yerlesim: e.ta
 $("#ayarJevPuanla").addEventListener("change", (e) => ayarKaydet({ jev_yanit_puanla: e.target.checked }));
 $("#ayarHafizaEkle").addEventListener("change", (e) => ayarKaydet({ hafiza_ekle: e.target.checked }));
 $("#ayarHafizaAday").addEventListener("change", (e) => ayarKaydet({ hafiza_aday: e.target.checked }));
+$("#ayarHafizaOnay").addEventListener("change", (e) => ayarKaydet({ hafiza_onay: e.target.checked }));
+$("#hafizaOnayla").addEventListener("click", async (e) => {
+  const d = e.currentTarget; d.disabled = true;
+  try { await api("/api/hafiza-onayla", {}); bildir("hafiza.py'nin yeni sürümü onaylandı."); } catch (h) { bildir(h.message); }
+  d.disabled = false;
+  hafizaBolumunuDoldur();
+});
 $("#ayarJevAcik").addEventListener("change", async (e) => { await ayarKaydet({ jev_acik: e.target.checked }); jevBolumunuDoldur(); });
 $$("#ayarTema button").forEach((b) => b.addEventListener("click", () => ayarKaydet({ tema: b.dataset.deger })));
 $$("#ayarYazi button").forEach((b) => b.addEventListener("click", () => ayarKaydet({ yazi_boyutu: b.dataset.deger })));

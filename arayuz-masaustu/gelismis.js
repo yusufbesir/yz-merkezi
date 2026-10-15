@@ -162,7 +162,7 @@ function cokluBlok(ad, renk) {
   };
 }
 
-async function cokluGonder(onayli = false) {
+async function cokluGonder(onayli = false, baglamKarari = null, baglamKimligi = null) {
   const kutu = $("#cokluMesaj");
   const metin = kutu.value.trim();
   if (!metin || cokluSuruyor) return;
@@ -170,7 +170,22 @@ async function cokluGonder(onayli = false) {
   $("#cokluGonder").disabled = true;
   cokluDurum("Gönderiliyor…");
   try {
-    const v = await api("/api/gonder", { metin, sohbet: null, ...(onayli ? { onayli: true } : {}) });
+    const v = await api("/api/gonder", { metin, sohbet: null, ...(onayli ? { onayli: true } : {}),
+      ...(baglamKarari ? { baglam_karari: baglamKarari } : {}), ...(baglamKimligi ? { baglam_kimligi: baglamKimligi } : {}) });
+    if (v.baglam_onay) {
+      // Hafıza bağlamı sitelere gitmeden önce gösterilir (Ayarlar → Hafıza → her seferinde onay iste).
+      const kok = $("#cokluDurum");
+      kok.replaceChildren();
+      kok.classList.remove("hata");
+      const ayrinti = el("details", "baglam");
+      ayrinti.open = true;
+      ayrinti.append(el("summary", "", `Hafızadan şu bağlam eklenecek (${v.karakter} karakter)`), el("pre", "", v.baglam || ""));
+      kok.append(ayrinti,
+        dugme("Ekleyerek gönder", "kucuk-dugme", () => { cokluSuruyor = false; cokluGonder(onayli, "ekle", v.baglam_kimligi); }),
+        dugme("Bağlamsız gönder", "kucuk-dugme", () => { cokluSuruyor = false; cokluGonder(onayli, "ekleme"); }),
+        dugme("Vazgeç", "kucuk-dugme", () => cokluDurum("Gönderme iptal edildi.")));
+      return;
+    }
     if (v.onay_gerekli) {
       const kok = $("#cokluDurum");
       kok.textContent = `Bu mesaj ${v.aciklama} içeriyor olabilir. `;
@@ -193,7 +208,8 @@ async function cokluGonder(onayli = false) {
       beklenenler.push(cokluYanitBekle(b, blok, kayit));
     }
     const sorun = (v.sorunlar || []).map((s) => `${s.ad}: ${s.sebep}`).join("; ");
-    cokluDurum((v.gonderilen.length ? `Gönderildi: ${v.gonderilen.join(", ")}.` : "Hiçbir yere gönderilemedi.") + (sorun ? `  Sorun: ${sorun}` : ""), Boolean(sorun));
+    const not = v.hassas_uyari ? `  Not: mesaj ${v.hassas_uyari.aciklama} içeriyor.` : "";
+    cokluDurum((v.gonderilen.length ? `Gönderildi: ${v.gonderilen.join(", ")}.` : "Hiçbir yere gönderilemedi.") + (sorun ? `  Sorun: ${sorun}` : "") + not, Boolean(sorun));
     if (beklenenler.length > 1) Promise.all(beklenenler).then((metinler) => cokluPuanla(kayit, bloklar, metinler));
   } catch (h) {
     cokluDurum(h.message, true);
@@ -237,7 +253,8 @@ async function cokluPuanla(kayit, bloklar, metinler) {
   if (metinler.filter((m) => m && m.trim()).length < 2) return;
   try {
     const v = await api("/api/yanit-puanla", { sohbet: kayit.sohbet, mesaj_sira: kayit.sira });
-    if (bloklar[v.onerilen]) bloklar[v.onerilen].rozetKoy(v.puan);
+    if (v.durum) cokluDurum(`Puanlama yapılmadı: ${v.durum}.`);
+    else if (bloklar[v.onerilen]) bloklar[v.onerilen].rozetKoy(v.puan);
   } catch (h) { bildir(h.message); }
 }
 

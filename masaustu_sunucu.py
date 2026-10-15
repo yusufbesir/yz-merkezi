@@ -75,6 +75,13 @@ AYAR_MANTIKSAL = ("enter_bas", "kutuyu_temizle")
 # Hafıza OS köprüsü (hafiza_kopru.py): hafızayı mesaja ekle / yanıtları hafızaya aday olarak yaz (ikisi de varsayılan açık).
 VARSAYILAN_AYARLAR.update(hafiza_ekle=True, hafiza_aday=True)
 AYAR_MANTIKSAL += ("hafiza_ekle", "hafiza_aday")
+# Hafıza bağlamı dışarı (motora/siteye) gitmeden önce her seferinde kullanıcı onayı (varsayılan AÇIK; güvenlik denetimi).
+VARSAYILAN_AYARLAR.update(hafiza_onay=True)
+AYAR_MANTIKSAL += ("hafiza_onay",)
+BAGLAM_ONAY_SURESI = 600      # sn: gösterilen bağlam bu süre içinde "Ekleyerek gönder" ile kullanılabilir
+BAGLAM_ONAY_EN_FAZLA = 50     # bellekte bekleyen bağlam onayı sayısı üst sınırı
+BAGLAM_KARARLARI = ("ekle", "ekleme")
+JEV_HASSAS_NOTU = "hassas içerik, Jev'e gönderilmedi"
 # Hassas bilgi uyarısı (hassas.py) ve ajan seçimi (yonlendirici.py): uyarı varsayılan açık, otomatik yönlendirme kapalı.
 VARSAYILAN_AYARLAR.update(hassas_uyari=True, otomatik_yonlendirme=False)
 AYAR_MANTIKSAL += ("hassas_uyari", "otomatik_yonlendirme")
@@ -94,12 +101,15 @@ AD_EN_FAZLA = 40
 TARAYICI_EXELERI = {"msedge.exe", "chrome.exe", "firefox.exe", "brave.exe", "opera.exe"}
 
 # İstek belirteci: açılışta bir kez üretilir, yalnızca bellekte (ve kullanıcıya özel klasördeki belirtec dosyasında) durur.
+# Arayüze hiç verilmez: Edge tek kullanımlık, kısa ömürlü bir açılış koduyla (/ac/<kod>) açılır, sunucu kodu tüketip
+# belirteci HttpOnly; SameSite=Strict çerezine koyar. Komut satırında (Win32_Process ile okunabilir) belirteç geçmez.
 BELIRTEC = guvenlik.yeni_belirtec()
+ACILIS_KODLARI = guvenlik.AcilisKodlari()
 AYAR_UYARISI = None  # ayar dosyası bozuk çıkıp yedeklenirse arayüze gösterilecek Türkçe uyarı
 
 KILIT = threading.Lock()
 KILITSIZ = {"/api/site-ac", "/api/site-sohbet-ac", "/api/pencere-ac", "/api/oneri", "/api/yonlendirme-ac",
-            "/api/yanit-puanla", "/api/durdur"}  # yanıt puanlama Jev'i beklerken ayar kilidini tutmaz (kilidi kendisi kısa süre alır)
+            "/api/yanit-puanla", "/api/durdur", "/api/hafiza-onayla"}  # yanıt puanlama Jev'i beklerken ayar kilidini tutmaz (kilidi kendisi kısa süre alır)
 is_kilidi = threading.Lock()  # aynı anda tek gönderme/öğretme işlemi
 
 
@@ -575,15 +585,35 @@ def jev_kullanilabilir(ayarlar):
     return ayarlar.get("jev_acik", True) is not False and jev.hazir_mi()
 
 
+class JevHassasHatasi(jev.JevHatasi):
+    """Jev'e gidecek metinlerden birinde hassas bilgi bulundu; hiçbir istek yapılmadı."""
+
+
+def jev_guvenli_sinifla(metinler, secenekler, gonderilecek=None, **ek):
+    """Jev'e giden HER çağrının tek kapısı: önce yerel hassas tarama, sonra jev.sinifla.
+
+    metinler: Jev'e gidecek içeriğin parçaları (soru, yanıtlar ...). Herhangi birinde (düşük önemli kişisel bilgi
+    dahil) hassas bulgu varsa Jev'e hiçbir şey gönderilmez ve JevHassasHatasi (JEV_HASSAS_NOTU) atılır; çağıran
+    kural tabanlı/yerel yola düşer. gonderilecek verilmezse metinler satır satır birleştirilip gönderilir.
+    """
+    if isinstance(metinler, str):
+        metinler = [metinler]
+    metinler = [str(m or "") for m in metinler]
+    govde = gonderilecek if gonderilecek is not None else "\n".join(metinler)
+    if any(hassas.hassas_var_mi(m) for m in [*metinler, govde]):
+        raise JevHassasHatasi(JEV_HASSAS_NOTU)
+    return jev.sinifla(govde, secenekler, **ek)
+
+
 def jev_hassas_tara(metin, ayarlar):
     """Yerel tarama temiz çıkınca Jev'in ikinci görüşü: {"kategori", "aciklama", "puan", "kaynak": "jev"} ya da None.
 
-    Jev kapalı/hazır değil/hata verirse sessizce None (yerel sonuç geçerli kalır).
+    Jev kapalı/hazır değil/hata verirse ya da metinde (düşük önemli de olsa) hassas bulgu varsa sessizce None.
     """
     if not jev_kullanilabilir(ayarlar):
         return None
     try:
-        s = jev.sinifla(metin, JEV_HASSAS_SECENEKLERI, acik=True)
+        s = jev_guvenli_sinifla([metin], JEV_HASSAS_SECENEKLERI, acik=True)
     except Exception:  # noqa: BLE001  (Jev hatası gönderimi hiçbir koşulda engellemez)
         return None
     if s["secim"] == "yok" or s["secim"] not in JEV_HASSAS_ACIKLAMALARI or s["puan"] < JEV_HASSAS_ESIGI:
@@ -592,13 +622,20 @@ def jev_hassas_tara(metin, ayarlar):
             "puan": round(s["puan"], 3), "kaynak": "jev"}
 
 
-def jev_ile_siniflandir(metin, ayarlar):
-    """Yönlendirici için Jev'le tür ve zorluk (iki istek paralel): {"tur", "zorluk"} ya da None (kurala dönülür)."""
+def jev_ile_siniflandir(metin, ayarlar, notlar=None):
+    """Yönlendirici için Jev'le tür ve zorluk (iki istek paralel): {"tur", "zorluk"} ya da None (kurala dönülür).
+
+    Metinde hassas bilgi varsa Jev'e hiç gitmez; `notlar` listesi verildiyse JEV_HASSAS_NOTU eklenir.
+    """
     if not jev_kullanilabilir(ayarlar):
         return None
+    if hassas.hassas_var_mi(metin):  # iki paralel isteğin ikisi de aynı kapıdan geçer; erken ve tek not için
+        if notlar is not None:
+            notlar.append(JEV_HASSAS_NOTU)
+        return None
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as havuz:
-        tur = havuz.submit(jev.sinifla, metin, JEV_TUR_SECENEKLERI)
-        zorluk = havuz.submit(jev.sinifla, metin, JEV_ZORLUK_SECENEKLERI)
+        tur = havuz.submit(jev_guvenli_sinifla, [metin], JEV_TUR_SECENEKLERI)
+        zorluk = havuz.submit(jev_guvenli_sinifla, [metin], JEV_ZORLUK_SECENEKLERI)
         try:
             return {"tur": tur.result()["secim"], "zorluk": zorluk.result()["secim"]}
         except Exception:  # noqa: BLE001  (JevHatasi ya da beklenmeyen: kural tabanlı yol)
@@ -642,11 +679,15 @@ def yanit_puanla(g):
     yanitlar = {sid: kayitli[sid] for sid in siteler.SITELER if isinstance(kayitli.get(sid), str) and kayitli[sid].strip()}
     if len(yanitlar) < 2:
         raise IsHatasi("Puanlamak için en az iki site yanıtı gerekli.")
+    soru = mesaj.get("metin", "")
     try:
-        s = jev.sinifla(_puanlama_metni(mesaj.get("metin", ""), yanitlar),
-                        {sid: f"The answer labelled [{sid}] is the best answer to the question "
-                              "(most correct, complete and helpful)." for sid in yanitlar},
-                        baglam="Pick the single best answer among the labelled answers to the question.")
+        s = jev_guvenli_sinifla([soru, *yanitlar.values()],
+                                {sid: f"The answer labelled [{sid}] is the best answer to the question "
+                                      "(most correct, complete and helpful)." for sid in yanitlar},
+                                gonderilecek=_puanlama_metni(soru, yanitlar),
+                                baglam="Pick the single best answer among the labelled answers to the question.")
+    except JevHassasHatasi:  # yerel yol: puanlama yapılmaz, kullanıcı yanıtları kendisi karşılaştırır
+        return {"onerilen": None, "site_ad": None, "puan": None, "olasiliklar": {}, "durum": JEV_HASSAS_NOTU}
     except jev.JevHatasi as h:
         raise IsHatasi(f"Yanıtlar puanlanamadı: {h}") from None
     with KILIT:  # sonucu kaydet (arada sohbet silindiyse sessizce atla)
@@ -786,10 +827,11 @@ def plan_olustur(metin, ayarlar, motor_istegi="otomatik"):
     içeriyorsa Jev'e hiç gitmez. Motor elle seçildiyse o motor başa alınır (kaynak "kullanici"), diğerleri yedektir.
     """
     kurallar, uyarilar = yonlendirici.kurallari_yukle()
-    sinif = None
-    if motor_istegi == "otomatik" and hassas.tara(metin)["kategori"] == "yok":
-        sinif = jev_ile_siniflandir(metin, ayarlar)
+    sinif, notlar = None, []
+    if motor_istegi == "otomatik":  # hassas içerik jev_ile_siniflandir içinde elenir (Jev'e gitmez)
+        sinif = jev_ile_siniflandir(metin, ayarlar, notlar)
     sonuc = yonlendirici.oner(metin, kurallar, sinif=sinif, kaynak="jev")
+    sonuc["jev_notu"] = notlar[0] if notlar else None
     _SON_SINIFLANDIRMA.clear()
     _SON_SINIFLANDIRMA.update(tur=sonuc["tur"], tur_ad=sonuc["tur_ad"], zorluk=sonuc["zorluk"],
                               zorluk_ad=sonuc["zorluk_ad"], kaynak=sonuc["kaynak"],
@@ -843,8 +885,86 @@ def sor_hazirla(g):
     sohbet = g.get("sohbet")
     if sohbet is not None and not (isinstance(sohbet, str) and len(sohbet) <= 80):
         raise IsHatasi("Geçersiz sohbet.")
+    karar, kimlik = _baglam_karari_dogrula(g)
     return {"metin": metin.strip(), "motor": motor_istegi, "model": (model or "").strip() or None,
-            "sohbet": sohbet or None, "onayli": g.get("onayli") is True, "yeniden": g.get("yeniden") is True}
+            "sohbet": sohbet or None, "onayli": g.get("onayli") is True, "yeniden": g.get("yeniden") is True,
+            "baglam_karari": karar, "baglam_kimligi": kimlik}
+
+
+def _baglam_karari_dogrula(g):
+    """İstekteki baglam_karari ("ekle" | "ekleme" | yok) ve baglam_kimligi; geçersizse IsHatasi."""
+    karar, kimlik = g.get("baglam_karari"), g.get("baglam_kimligi")
+    if karar is not None and karar not in BAGLAM_KARARLARI:
+        raise IsHatasi("Geçersiz bağlam kararı.")
+    if kimlik is not None and not (isinstance(kimlik, str) and re.fullmatch(r"[A-Za-z0-9_-]{8,64}", kimlik)):
+        raise IsHatasi("Geçersiz bağlam kimliği.")
+    return karar, kimlik
+
+
+# ---------------------------------------------------------------- hafıza bağlamı onayı
+
+_BAGLAM_ONAYLARI = {}   # kimlik -> {"ozet": mesajın sha256'sı, "kayit": bağlam kaydı, "zaman": monotonic}
+_BAGLAM_ONAY_KILIDI = threading.Lock()
+
+
+def _mesaj_ozeti(metin):
+    import hashlib
+    return hashlib.sha256(str(metin).encode("utf-8")).hexdigest()
+
+
+def _baglam_onayi_sakla(metin, kayit):
+    """Gösterilen bağlamı bellekte saklar; arayüz "Ekleyerek gönder" derken bu kimliği geri yollar."""
+    import secrets
+    kimlik = secrets.token_urlsafe(12)
+    simdi = time.monotonic()
+    with _BAGLAM_ONAY_KILIDI:
+        for k in [k for k, v in _BAGLAM_ONAYLARI.items() if simdi - v["zaman"] > BAGLAM_ONAY_SURESI]:
+            del _BAGLAM_ONAYLARI[k]
+        while len(_BAGLAM_ONAYLARI) >= BAGLAM_ONAY_EN_FAZLA:
+            del _BAGLAM_ONAYLARI[next(iter(_BAGLAM_ONAYLARI))]
+        _BAGLAM_ONAYLARI[kimlik] = {"ozet": _mesaj_ozeti(metin), "kayit": kayit, "zaman": simdi}
+    return kimlik
+
+
+def _baglam_onayi_al(kimlik, metin):
+    """Onaylanan bağlam kaydı (tek kullanımlık; aynı mesaj ve süresi dolmamış olmalı); yoksa None."""
+    if not kimlik:
+        return None
+    with _BAGLAM_ONAY_KILIDI:
+        k = _BAGLAM_ONAYLARI.pop(kimlik, None)
+    if not k or time.monotonic() - k["zaman"] > BAGLAM_ONAY_SURESI or k["ozet"] != _mesaj_ozeti(metin):
+        return None
+    return k["kayit"]
+
+
+def baglam_coz(metin, ayarlar, karar, kimlik):
+    """Mesaja eklenecek hafıza bağlamını belirler. Döner: ("gonder", bağlam kaydı ya da None) | ("onay", olay).
+
+    - Hafıza kapalı ya da karar "ekleme": bağlam yok.
+    - Onay ayarı kapalı (hafiza_onay False): eski otomatik davranış (bağlam varsa eklenir).
+    - Onay açık: karar "ekle" ve geçerli kimlik → kullanıcının GÖRDÜĞÜ bağlam eklenir. Aksi hâlde bağlam alınır;
+      boşsa bağlamsız gönderilir, doluysa {"tur": "baglam_onay", ...} olayı döner (hiçbir şey gönderilmez/kaydedilmez).
+    """
+    if not ayarlar.get("hafiza_ekle", True) or karar == "ekleme":
+        return "gonder", None
+    if ayarlar.get("hafiza_onay", True) is False:
+        return "gonder", hafiza_kopru.baglam_kaydi(metin)
+    if karar == "ekle":
+        onayli = _baglam_onayi_al(kimlik, metin)
+        if onayli:
+            return "gonder", onayli
+    kayit = hafiza_kopru.baglam_kaydi(metin)
+    if not kayit:
+        return "gonder", None
+    return "onay", {"tur": "baglam_onay", "baglam": kayit["metin"], "karakter": kayit["karakter"],
+                    "baglam_kimligi": _baglam_onayi_sakla(metin, kayit)}
+
+
+def _maskeli_baglam(baglam):
+    """Geçmişe yazılacak bağlam kaydı (metni hassas.maskele'den geçmiş kopya)."""
+    if not baglam:
+        return baglam
+    return {**baglam, "metin": hassas.maskele(baglam.get("metin", ""))}
 
 
 def _kisa(metin, sinir):
@@ -958,16 +1078,21 @@ def sor_akisi(p):
     metin = p["metin"]
     with KILIT:
         ayarlar = ayarlari_oku()["ayarlar"]
+    hassas_notu = None
     if ayarlar.get("hassas_uyari", True) and not p["onayli"]:  # onay gerekiyorsa hiçbir şey kaydedilmez/gönderilmez
         tarama = hassas.tara(metin)
-        if tarama["kategori"] != "yok":
+        if hassas.onay_gerekli_mi(tarama):
             yield {"tur": "onay_gerekli", "kategori": tarama["kategori"], "aciklama": hassas.uyari_metni(tarama),
                    "eslesme_sayisi": tarama["eslesme_sayisi"], "kaynak": "kural"}
             return
-        jev_h = jev_hassas_tara(metin, ayarlar)
-        if jev_h:
-            yield {"tur": "onay_gerekli", **jev_h}
-            return
+        if tarama["kategori"] != "yok":  # düşük önem (kişisel bilgi, olası anahtar): yalnızca uyarı, gönderim sürer
+            hassas_notu = {"tur": "hassas_uyari", "kategori": tarama["kategori"], "onem": tarama["onem"],
+                           "aciklama": hassas.uyari_metni(tarama), "eslesme_sayisi": tarama["eslesme_sayisi"]}
+        else:
+            jev_h = jev_hassas_tara(metin, ayarlar)
+            if jev_h:
+                yield {"tur": "onay_gerekli", **jev_h}
+                return
     if p["sohbet"]:
         with _IPTAL_KILIDI:
             mesgul = p["sohbet"] in _IPTALLER
@@ -976,22 +1101,29 @@ def sor_akisi(p):
             return
     # Hafıza bağlamı ve yönlendirme (Jev) birbirinden bağımsız ağ/alt süreç işleri: paralel yürütülür.
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as havuz:
-        baglam_is = havuz.submit(hafiza_kopru.baglam_ekle, metin) if ayarlar.get("hafiza_ekle", True) else None
+        baglam_is = havuz.submit(baglam_coz, metin, ayarlar, p["baglam_karari"], p["baglam_kimligi"])
         plan_is = havuz.submit(plan_olustur, metin, ayarlar, p["motor"])
-        gonderilecek, baglam = baglam_is.result() if baglam_is else (metin, None)
+        baglam_turu, baglam = baglam_is.result()
         sonuc, adaylar, _ = plan_is.result()
+    if baglam_turu == "onay":  # bağlam kasadan dışarı gitmeden önce kullanıcıya gösterilir: gönderim/kayıt yok
+        yield baglam
+        return
+    gonderilecek = hafiza_kopru.baglami_birlestir(metin, baglam)
+    if hassas_notu:
+        yield hassas_notu
     durumlar = {d["id"]: d for d in motor_durumlari()}
     secilen = next((a for a in adaylar if durumlar[a["motor"]]["hazir"]), None)
     iptal = threading.Event()
+    kayitli_metin = hassas.maskele(metin)  # geçmişe maskeli yazılır; motora giden metin maskelenmez
     with KILIT:  # kullanıcı mesajı akış başlamadan kaydedilir (bağlantı kopsa da geçmişte kalır)
         veri = ayarlari_oku()
-        sohbet, onceki = _tek_sohbet_hazirla(veri, p["sohbet"], metin, p["yeniden"])
+        sohbet, onceki = _tek_sohbet_hazirla(veri, p["sohbet"], kayitli_metin, p["yeniden"])
         sid = sohbet["id"]
         oturumlar = dict(sohbet.get("motor_oturumlari") or {})
         son_motor = _son_asistan_motoru(onceki)
         ayarlari_yaz(veri)
     if baglam:
-        _baglam_kaydet(sid, baglam)
+        _baglam_kaydet(sid, _maskeli_baglam(baglam))
     with _IPTAL_KILIDI:
         _IPTALLER[sid] = iptal
     try:
@@ -1014,7 +1146,7 @@ def sor_akisi(p):
                "model": model.get("id") if model else None,
                "model_ad": (model.get("ad") or model.get("id")) if model else None,
                "sinif": secilen["sinif"], "istek_turu": sonuc["tur"], "zorluk": sonuc["zorluk"],
-               "sebep": sebep, "kaynak": sonuc["kaynak"], "yedek": bool(atlanan)}
+               "sebep": sebep, "kaynak": sonuc["kaynak"], "yedek": bool(atlanan), "jev_notu": sonuc.get("jev_notu")}
         if atlanan:
             yield {"tur": "durum", "metin": f"{atlanan[0]['ad']} hazır değil, {d['ad']} ile devam ediyorum"}
         oturum = oturumlar.get(mid)
@@ -1062,7 +1194,7 @@ def sor_akisi(p):
                     pass
             govde = bitti["metin"] if bitti and isinstance(bitti.get("metin"), str) and bitti["metin"] else "".join(parcalar)
             sure = (bitti or {}).get("sure")
-            kayit = {"rol": "asistan", "metin": govde[:YANIT_KAYIT_SINIRI], "motor": mid,
+            kayit = {"rol": "asistan", "metin": hassas.maskele(govde[:YANIT_KAYIT_SINIRI]), "motor": mid,
                      "model": (bitti or {}).get("model") or (model.get("id") if model else None),
                      "model_ad": (model.get("ad") or model.get("id")) if model else None,
                      "sure": sure if isinstance(sure, (int, float)) else round(time.monotonic() - baslangic, 1),
@@ -1074,11 +1206,13 @@ def sor_akisi(p):
             try:
                 sira = _asistan_kaydet(sid, kayit, mid, yeni_oturum)
                 if kayit["metin"] and not hata and not iptal.is_set() and ayarlar.get("hafiza_aday", True):
-                    hafiza_kopru.aday_yaz(d["ad"], metin, kayit["metin"])  # Hafıza OS gelen kutusuna aday (yalnızca ekleme)
+                    hafiza_kopru.aday_yaz(d["ad"], kayitli_metin, kayit["metin"])  # Hafıza OS gelen kutusuna aday (yalnızca ekleme)
             except Exception as h:  # noqa: BLE001
                 sira = None
                 guvenlik.beklenmeyen_hata("sor/kayit", h)
-        yield {"tur": "kayit", "sohbet": sid, "mesaj_sira": sira}
+        # Arayüz geçmişte duranı (maskeli metinleri) göstersin.
+        yield {"tur": "kayit", "sohbet": sid, "mesaj_sira": sira, "kullanici_metin": kayitli_metin,
+               "asistan_metin": kayit["metin"]}
     finally:
         with _IPTAL_KILIDI:
             _IPTALLER.pop(sid, None)
@@ -1092,8 +1226,11 @@ def yonlendirme_durumu():
 
 
 def yonlendirme_dosyasini_ac():
-    """yonlendirme.json'u varsayılan düzenleyicide açar (yol sabittir, istekten alınmaz)."""
+    """Veri klasöründeki yonlendirme.json kullanıcı kopyasını varsayılan düzenleyicide açar (yol sabittir, istekten
+    alınmaz; kopya yoksa önce paketteki şablondan oluşturulur)."""
     yol = yonlendirici.YONLENDIRME_DOSYASI
+    if yol == yonlendirici.varsayilan_yonlendirme_dosyasi():
+        yonlendirici.kullanici_kopyasini_hazirla(yol)
     if not yol.is_file():
         raise IsHatasi(f"{yol.name} bulunamadı: {yol}")
     ac = getattr(os, "startfile", None)
@@ -1546,7 +1683,10 @@ def sohbete_ekle(veri, sohbet_id, metin, gonderilen, sorunlar, baglam=None):
     """Mesajı yerel sohbet geçmişine ekler; (sohbet kimliği, mesajın sırası) döndürür.
 
     baglam: Hafıza OS'tan eklenen bağlam kaydı; ham mesajdan ayrı alanda ("baglam") saklanır.
+    Mesaj ve bağlam geçmişe hassas.maskele'den geçirilerek yazılır (sitelere giden metin maskelenmez).
     """
+    metin = hassas.maskele(metin)
+    baglam = _maskeli_baglam(baglam)
     sohbet = next((s for s in veri["sohbetler"] if s["id"] == sohbet_id), None)
     if not sohbet:
         sohbet = {"id": sohbet_id or datetime.now().strftime("%Y%m%d%H%M%S%f"),
@@ -1606,7 +1746,7 @@ def yaniti_kaydet(veri, sohbet_id, sira, site_id, metin, site_adresi=None):
         raise IsHatasi("Sohbet ya da mesaj bulunamadı.")
     if site_id not in siteler.SITELER:
         raise IsHatasi("Site bulunamadı.")
-    sohbet["mesajlar"][sira].setdefault("yanitlar", {})[site_id] = str(metin or "")[:YANIT_KAYIT_SINIRI]
+    sohbet["mesajlar"][sira].setdefault("yanitlar", {})[site_id] = hassas.maskele(str(metin or "")[:YANIT_KAYIT_SINIRI])
     if site_adresi:
         site_adresini_kaydet(sohbet, site_id, site_adresi)
 
@@ -1633,6 +1773,23 @@ class Isleyici(guvenlik.GuvenlikKarisimi, BaseHTTPRequestHandler):
 
     def _beklenen_belirtec(self):
         return BELIRTEC
+
+    def _cerez_kabul_edilir_mi(self):
+        """Çerezle gelen istekte CSRF denetimi (Host/Origin _guvenli'de): Sec-Fetch-Site varsa same-origin olmalı."""
+        site = self.headers.get("Sec-Fetch-Site")
+        return site is None or site.strip().lower() == "same-origin"
+
+    def _acilis(self, kod):
+        """GET /ac/<kod>: tek kullanımlık açılış kodunu tüketir, belirteci HttpOnly çereze koyup / sayfasına yönlendirir."""
+        if not ACILIS_KODLARI.tuket(kod):
+            guvenlik.hata_yaz("Geçersiz ya da tükenmiş açılış kodu reddedildi (/ac/)")
+            return self._json({"hata": "Açılış bağlantısı geçersiz ya da süresi dolmuş. Uygulamayı yeniden açın."}, 403)
+        self.send_response(302)
+        self.send_header("Set-Cookie", guvenlik.oturum_cerezi(BELIRTEC))
+        self.send_header("Location", "/")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def _guvenli(self):
         izinli = {f"127.0.0.1:{self.server.server_port}", f"localhost:{self.server.server_port}"}
@@ -1664,6 +1821,8 @@ class Isleyici(guvenlik.GuvenlikKarisimi, BaseHTTPRequestHandler):
             return self._json({"hata": "İzin verilmeyen istek."}, 403)
         adres = urlparse(self.path)
         yol, sorgu = adres.path, parse_qs(adres.query)
+        if yol.startswith("/ac/"):
+            return self._acilis(yol[len("/ac/"):])
         if self._api_izni_yok(yol):
             return
         try:
@@ -1779,7 +1938,7 @@ class Isleyici(guvenlik.GuvenlikKarisimi, BaseHTTPRequestHandler):
         if yol == "/api/site-sohbet-ac":
             return site_sohbet_ac(g.get("site", ""), g.get("url", ""))
         if yol == "/api/pencere-ac":  # ikinci örnek (baslat.bat yeniden açıldı) arayüz penceresini buradan ister
-            uyari = tarayici.uygulama_penceresi_ac(f"http://127.0.0.1:{self.server.server_port}/#t={BELIRTEC}")
+            uyari = tarayici.uygulama_penceresi_ac(acilis_adresi(self.server.server_port))
             if uyari:
                 raise IsHatasi(uyari)
             return {"tamam": True}
@@ -1791,6 +1950,11 @@ class Isleyici(guvenlik.GuvenlikKarisimi, BaseHTTPRequestHandler):
             return sor_durdur(g)
         if yol == "/api/yanit-puanla":  # ortak sohbette bütün site yanıtları bitince (ayar: jev_yanit_puanla)
             return yanit_puanla(g)
+        if yol == "/api/hafiza-onayla":  # Ayarlar → Hafıza: değişmiş hafiza.py'nin yeni sürümüne güven
+            sonuc = hafiza_kopru.hash_onayla()
+            if not sonuc["tamam"]:
+                raise IsHatasi(sonuc["sebep"])
+            return {**sonuc, "durum": hafiza_kopru.durum()}
         raise IsHatasi("Bilinmeyen istek.")
 
     @staticmethod
@@ -1848,13 +2012,22 @@ class Isleyici(guvenlik.GuvenlikKarisimi, BaseHTTPRequestHandler):
             if not site_idleri and not program_idleri:
                 raise IsHatasi("En az bir hesap ya da program seçin.")
             model_sec = _model_sec_dogrula(g.get("model_sec"))
+            baglam_karari, baglam_kimligi = _baglam_karari_dogrula(g)
+            hassas_notu = None
             if veri["ayarlar"].get("hassas_uyari", True) and g.get("onayli") is not True:
                 tarama = hassas.tara(metin)  # gönderilmeden önce; onay gerekiyorsa hiçbir yere yazılmaz/gönderilmez
-                if tarama["kategori"] != "yok":
+                if hassas.onay_gerekli_mi(tarama):
                     return {"onay_gerekli": True, "kategori": tarama["kategori"], "aciklama": hassas.uyari_metni(tarama),
                             "eslesme_sayisi": tarama["eslesme_sayisi"], "kaynak": "kural"}
-                if jev_hassas:  # yerel kurallar temiz, Jev (olasılık ≥ JEV_HASSAS_ESIGI) bir sır görüyor
+                if tarama["kategori"] != "yok":  # düşük önem: yalnızca uyarı
+                    hassas_notu = {"kategori": tarama["kategori"], "onem": tarama["onem"],
+                                   "aciklama": hassas.uyari_metni(tarama)}
+                elif jev_hassas:  # yerel kurallar temiz, Jev (olasılık ≥ JEV_HASSAS_ESIGI) bir sır görüyor
                     return {"onay_gerekli": True, **jev_hassas}
+            # Hafıza OS bağlamı (hafiza_kopru.py): onay ayarı açıksa önce kullanıcıya gösterilir (gönderim yok).
+            baglam_turu, baglam = baglam_coz(metin, veri["ayarlar"], baglam_karari, baglam_kimligi)
+            if baglam_turu == "onay":
+                return {**baglam, "baglam_onay": True}
             gonder_ek = {"model_sec": model_sec} if model_sec and model_sec["site"] in site_idleri else {}
             sohbet_url = (g.get("sohbet_url") or "").strip() or None
             site_adresleri = {}
@@ -1865,8 +2038,7 @@ class Isleyici(guvenlik.GuvenlikKarisimi, BaseHTTPRequestHandler):
             if not is_kilidi.acquire(blocking=False):
                 raise IsHatasi("Önceki gönderme hâlâ sürüyor.")
             try:
-                # Hafıza OS bağlamı (hafiza_kopru.py): boşsa hiçbir şey eklenmez; hata mesajı engellemez.
-                gonderilecek, baglam = hafiza_kopru.baglam_ekle(metin) if veri["ayarlar"].get("hafiza_ekle", True) else (metin, None)
+                gonderilecek = hafiza_kopru.baglami_birlestir(metin, baglam)
                 gonderilen, sorunlar, bekleyen, one_getir = gonder(
                     veri, gonderilecek, site_idleri, program_idleri, veri["ayarlar"]["enter_bas"], sohbet_url, site_adresleri,
                     **gonder_ek)
@@ -1880,11 +2052,13 @@ class Isleyici(guvenlik.GuvenlikKarisimi, BaseHTTPRequestHandler):
             if not sohbet_url:  # bir site sohbetine yazılıyorsa yerel geçmişe eklenmez
                 sid, sira = sohbete_ekle(veri, g.get("sohbet"), metin, gonderilen, sorunlar, baglam)
             return {"gonderilen": gonderilen, "sorunlar": sorunlar, "sohbet": sid, "mesaj_sira": sira,
-                    "yanit_bekleyen": bekleyen, "sohbetler": veri["sohbetler"], "baglam": baglam}
+                    "yanit_bekleyen": bekleyen, "sohbetler": veri["sohbetler"], "baglam": _maskeli_baglam(baglam),
+                    "hassas_uyari": hassas_notu}
         if yol == "/api/yanit-kaydet":
             yaniti_kaydet(veri, g.get("sohbet"), g.get("mesaj_sira"), g.get("site"), g.get("metin"), site_adresi)
             if veri["ayarlar"].get("hafiza_aday", True):  # Hafıza OS gelen kutusuna aday kayıt (yalnızca ekleme)
-                hafiza_kopru.aday_yaz(g.get("site"), _soru_metni(veri, g.get("sohbet"), g.get("mesaj_sira")), g.get("metin"))
+                hafiza_kopru.aday_yaz(g.get("site"), _soru_metni(veri, g.get("sohbet"), g.get("mesaj_sira")),
+                                     hassas.maskele(g.get("metin")))
             return {"tamam": True}
         if yol == "/api/ogret":
             if not is_kilidi.acquire(blocking=False):
@@ -1926,6 +2100,11 @@ class Isleyici(guvenlik.GuvenlikKarisimi, BaseHTTPRequestHandler):
                     s["baslik"] = g["baslik"].strip()[:60]
             return {"tamam": True, "sohbetler": veri["sohbetler"]}
         raise IsHatasi("Bilinmeyen istek.")
+
+
+def acilis_adresi(port):
+    """Edge'in açacağı adres: tek kullanımlık, ACILIS_KODU_SURESI sn geçerli açılış kodu (belirteç DEĞİL)."""
+    return f"http://127.0.0.1:{port}/ac/{ACILIS_KODLARI.uret()}"
 
 
 def pencereyi_ac(adres):
@@ -2028,7 +2207,7 @@ def main():
     eski_verileri_tasi()
     guvenlik.belirtec_yaz(BELIRTEC)
     atexit.register(tarayici.kapat)  # uygulama kapanınca Edge'e Browser.close (boru kapanınca Edge zaten kapanır)
-    adres = f"http://127.0.0.1:{PORT}/#t={BELIRTEC}"  # parça (#) sunucuya gitmez; arayüz okuyup adresten siler
+    adres = acilis_adresi(PORT)  # belirteç komut satırına girmez; kod 30 sn içinde tek kez kullanılabilir
     if "--pencere-acma" not in sys.argv:
         threading.Thread(target=pencereyi_ac, args=(adres,), daemon=True).start()
     try:

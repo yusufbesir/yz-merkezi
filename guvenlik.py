@@ -1,7 +1,9 @@
 """İki yerel sunucunun (masaustu_sunucu.py ve sunucu.py) ortak güvenlik yardımcıları.
 
 - Tüm yanıtlara güvenlik başlıkları (X-Frame-Options, CSP, ...) eklenir.
-- /api/* istekleri açılışta üretilen rastgele belirteçle (X-YZ-Token) doğrulanır.
+- /api/* istekleri açılışta üretilen rastgele belirteçle (X-YZ-Token başlığı) doğrulanır. Masaüstü sürümünde arayüz
+  belirteci hiç görmez: tek kullanımlık, kısa ömürlü bir açılış koduyla (/ac/<kod>) HttpOnly; SameSite=Strict
+  çerezine alınır (AcilisKodlari, oturum_cerezi); çerezli istekte Sec-Fetch-Site varsa same-origin olmalıdır.
 - İstek gövdesi 1 MB ile ve 10 sn okuma süresiyle sınırlanır; JSON nesnesi olmayan gövde reddedilir.
 - Beklenmeyen hatalarda istemciye yalnızca kısa bir kod gider, ayrıntı hata.log dosyasına yazılır.
 - Ayar dosyası bozulursa silinmez, zaman damgalı yedeğe taşınır; yazma fsync + os.replace ile yapılır.
@@ -10,6 +12,9 @@ Yalnızca standart kütüphane.
 """
 import base64
 import hmac
+import threading
+import time
+from http.cookies import CookieError, SimpleCookie
 import json
 import os
 import re
@@ -21,6 +26,8 @@ from pathlib import Path
 import surum
 
 BELIRTEC_BASLIGI = "X-YZ-Token"
+CEREZ_ADI = "yz_oturum"
+ACILIS_KODU_SURESI = 30       # sn: Edge'e verilen açılış kodunun geçerlilik süresi (tek kullanımlık)
 GOVDE_SINIRI = 1_000_000      # bayt: bir istek gövdesinin en çok boyu
 GOVDE_ZAMAN_ASIMI = 10        # sn: gövdenin okunması için üst sınır
 HATA_LOGU_SINIRI = 1_000_000  # bayt: hata.log bu boyu aşınca yedeğe alınır
@@ -164,6 +171,62 @@ def belirtec_gecerli_mi(gelen, beklenen):
     if not gelen or not beklenen:
         return False
     return hmac.compare_digest(str(gelen).encode("utf-8"), str(beklenen).encode("utf-8"))
+
+
+def oturum_cerezi(belirtec):
+    """Set-Cookie değeri: belirteç JS'e görünmez (HttpOnly), başka siteden gelen isteklere eklenmez (SameSite=Strict)."""
+    return f"{CEREZ_ADI}={belirtec}; HttpOnly; SameSite=Strict; Path=/"
+
+
+def cerezden_belirtec(cerez_basligi):
+    """Cookie başlığındaki oturum belirteci (yoksa ya da okunamazsa "")."""
+    if not cerez_basligi:
+        return ""
+    try:
+        c = SimpleCookie()
+        c.load(str(cerez_basligi))
+    except CookieError:
+        return ""
+    m = c.get(CEREZ_ADI)
+    return m.value if m is not None else ""
+
+
+class AcilisKodlari:
+    """Tek kullanımlık, kısa ömürlü açılış kodları (Edge komut satırında belirteç yerine bu kod geçer).
+
+    Kod yalnızca bellekte durur; `tuket` ilk başarılı çağrıda kodu siler. Süresi dolan kodlar her çağrıda atılır.
+    """
+
+    def __init__(self, sure=ACILIS_KODU_SURESI, saat=time.monotonic):
+        self.sure, self._saat = sure, saat
+        self._kodlar = {}
+        self._kilit = threading.Lock()
+
+    def _temizle(self, simdi):
+        for k in [k for k, bitis in self._kodlar.items() if bitis <= simdi]:
+            del self._kodlar[k]
+
+    def uret(self, sure=None):
+        """Yeni kod (geçerlilik: `sure` sn, verilmezse sınıfın süresi)."""
+        kod = secrets.token_urlsafe(24)
+        with self._kilit:
+            simdi = self._saat()
+            self._temizle(simdi)
+            self._kodlar[kod] = simdi + (self.sure if sure is None else sure)
+        return kod
+
+    def tuket(self, kod):
+        """Kod geçerliyse siler ve True döner (ikinci kullanım, süresi dolmuş ya da bilinmeyen kod: False)."""
+        if not isinstance(kod, str) or not re.fullmatch(r"[A-Za-z0-9_-]{16,64}", kod):
+            return False
+        with self._kilit:
+            simdi = self._saat()
+            self._temizle(simdi)
+            for k in list(self._kodlar):
+                if hmac.compare_digest(k.encode("ascii"), kod.encode("ascii")):
+                    del self._kodlar[k]
+                    return True
+        return False
 
 
 # ---------------------------------------------------------------- hata günlüğü
@@ -321,8 +384,17 @@ class GuvenlikKarisimi:
     def _beklenen_belirtec(self):
         raise NotImplementedError
 
+    def _cerez_kabul_edilir_mi(self):
+        """Alt sınıf çerezle kimlik doğrulamayı açar (CSRF denetimiyle). Varsayılan: çerez kabul edilmez."""
+        return False
+
     def _belirtec_dogru_mu(self):
-        return belirtec_gecerli_mi(self.headers.get(BELIRTEC_BASLIGI, ""), self._beklenen_belirtec())
+        """Belirteç X-YZ-Token başlığında YA DA (alt sınıf izin veriyorsa) yz_oturum çerezinde; sabit zamanlı karşılaştırma."""
+        beklenen = self._beklenen_belirtec()
+        if belirtec_gecerli_mi(self.headers.get(BELIRTEC_BASLIGI, ""), beklenen):
+            return True
+        cerez = cerezden_belirtec(self.headers.get("Cookie", ""))
+        return bool(cerez) and self._cerez_kabul_edilir_mi() and belirtec_gecerli_mi(cerez, beklenen)
 
     def _govdeyi_at(self):
         """Reddedilen (403) POST'un gövdesini okuyup atar: okunmamış veriyle bağlantı kapanırsa istemci

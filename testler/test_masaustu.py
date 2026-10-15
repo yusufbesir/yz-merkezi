@@ -840,20 +840,112 @@ class TekAsistanAkisTesti(MotorluHttpTabani):
         _, o = self.sor({"metin": "şifre: Abc12345 ile giriş yap"})
         self.assertEqual(o[0]["tur"], "secim")
 
+    BAGLAM = {"metin": "Yusuf çay sever", "mod": "yerel", "karakter": 15, "kimlikler": []}
+
+    def baglam_yamasi(self, kayit=None):
+        """hafiza_kopru.baglam_kaydi sahtesi (gerçek kasaya dokunulmaz); çağrı sayısı self.baglam_cagrilari'nda."""
+        if not hasattr(self, "baglam_cagrilari"):   # ilk yamada bekleyen onaylar temizlenir (ikinci yama korur)
+            ms._BAGLAM_ONAYLARI.clear()
+        self.baglam_cagrilari = []
+
+        def baglam_kaydi(metin):
+            self.baglam_cagrilari.append(metin)
+            return dict(kayit or self.BAGLAM)
+        yama = mock.patch.object(ms.hafiza_kopru, "baglam_kaydi", baglam_kaydi)
+        yama.start()
+        self.addCleanup(yama.stop)
+
     def test_hafiza_baglami_motora_gider_ve_ayri_kaydedilir(self):
-        ms.ayarlari_yaz({"ayarlar": {"hafiza_ekle": True, "hafiza_aday": False}})
-        baglam = {"metin": "Yusuf çay sever", "mod": "yerel", "karakter": 15, "kimlikler": []}
-        with mock.patch.object(ms.hafiza_kopru, "baglam_ekle",
-                               lambda metin: (f"BAĞLAM: {baglam['metin']}\n---\n{metin}", baglam)):
-            _, o = self.sor({"metin": "Ne içeyim?", "motor": "claude"})
-        self.assertEqual(self.motorlar["claude"].cagrilar[0]["istem"], "BAĞLAM: Yusuf çay sever\n---\nNe içeyim?")
+        ms.ayarlari_yaz({"ayarlar": {"hafiza_ekle": True, "hafiza_aday": False, "hafiza_onay": False}})
+        self.baglam_yamasi()
+        _, o = self.sor({"metin": "Ne içeyim?", "motor": "claude"})
+        self.assertEqual(self.motorlar["claude"].cagrilar[0]["istem"],
+                         ms.hafiza_kopru.BASLIK + "\nYusuf çay sever" + ms.hafiza_kopru.AYIRAC + "Ne içeyim?")
         k = self.sohbet(o[-1]["sohbet"])["mesajlar"][0]
-        self.assertEqual((k["metin"], k["baglam"]), ("Ne içeyim?", baglam))   # ham mesaj ve bağlam ayrı alanlarda
+        self.assertEqual((k["metin"], k["baglam"]), ("Ne içeyim?", self.BAGLAM))   # ham mesaj ve bağlam ayrı alanlarda
 
     def test_hafiza_kapaliysa_baglam_aranmaz(self):
-        with mock.patch.object(ms.hafiza_kopru, "baglam_ekle") as ekle:
-            self.sor({"metin": "Merhaba", "motor": "claude"})
-        ekle.assert_not_called()
+        self.baglam_yamasi()
+        self.sor({"metin": "Merhaba", "motor": "claude"})
+        self.assertEqual(self.baglam_cagrilari, [])
+
+    # ---- hafıza bağlamı onayı (bulgu 3)
+    def test_baglam_onayi_olayi_gonderim_ve_kayit_yok(self):
+        ms.ayarlari_yaz({"ayarlar": {"hafiza_ekle": True, "hafiza_aday": False}})   # hafiza_onay varsayılan AÇIK
+        self.baglam_yamasi()
+        kod, o = self.sor({"metin": "Ne içeyim?", "motor": "claude"})
+        self.assertEqual(kod, 200)
+        self.assertEqual(self.turler(o), ["baglam_onay"])
+        self.assertEqual((o[0]["baglam"], o[0]["karakter"]), ("Yusuf çay sever", 15))
+        self.assertRegex(o[0]["baglam_kimligi"], r"^[A-Za-z0-9_-]{8,64}$")
+        self.assertEqual(self.motorlar["claude"].cagrilar, [], "onay gelmeden motora hiçbir şey gitmez")
+        self.assertEqual(ms.ayarlari_oku()["sohbetler"], [], "kayıt da yapılmaz")
+        return o[0]
+
+    def test_baglam_ekle_karari_gosterileni_ekler(self):
+        olay = self.test_baglam_onayi_olayi_gonderim_ve_kayit_yok()
+        self.baglam_yamasi({"metin": "BAŞKA bağlam", "mod": "yerel", "karakter": 12, "kimlikler": []})
+        _, o = self.sor({"metin": "Ne içeyim?", "motor": "claude", "baglam_karari": "ekle",
+                         "baglam_kimligi": olay["baglam_kimligi"]})
+        self.assertEqual(o[0]["tur"], "secim")
+        istem = self.motorlar["claude"].cagrilar[0]["istem"]
+        self.assertIn("Yusuf çay sever", istem, "kullanıcının gördüğü bağlam eklenir")
+        self.assertNotIn("BAŞKA", istem)
+        self.assertEqual(self.baglam_cagrilari, [], "onaylı bağlam yeniden aranmaz")
+        k = self.sohbet(o[-1]["sohbet"])["mesajlar"][0]
+        self.assertEqual(k["baglam"]["metin"], "Yusuf çay sever")
+
+    def test_baglam_ekleme_karari_baglamsiz(self):
+        ms.ayarlari_yaz({"ayarlar": {"hafiza_ekle": True, "hafiza_aday": False}})
+        self.baglam_yamasi()
+        _, o = self.sor({"metin": "Ne içeyim?", "motor": "claude", "baglam_karari": "ekleme"})
+        self.assertEqual(self.motorlar["claude"].cagrilar[0]["istem"], "Ne içeyim?")
+        self.assertEqual(self.baglam_cagrilari, [])
+        self.assertNotIn("baglam", self.sohbet(o[-1]["sohbet"])["mesajlar"][0])
+
+    def test_baglam_kimligi_gecersiz_ya_da_tukenmisse_yeniden_sorulur(self):
+        olay = self.test_baglam_onayi_olayi_gonderim_ve_kayit_yok()
+        govde = {"metin": "Ne içeyim?", "motor": "claude", "baglam_karari": "ekle", "baglam_kimligi": olay["baglam_kimligi"]}
+        self.sor(govde)                                  # kimlik tüketildi
+        _, o = self.sor(govde)
+        self.assertEqual(self.turler(o), ["baglam_onay"])
+        _, o = self.sor({**govde, "metin": "Başka soru"})   # başka mesaja geçmez
+        self.assertEqual(self.turler(o), ["baglam_onay"])
+        for kotu in ({"baglam_karari": "belki"}, {"baglam_kimligi": "a b"}):
+            kod, _ = self.sor({"metin": "x", **kotu})
+            self.assertEqual(kod, 400)
+
+    def test_hassas_onayindan_sonra_baglam_onayi_sorulur(self):
+        ms.ayarlari_yaz({"ayarlar": {"hafiza_ekle": True, "hafiza_aday": False}})
+        self.baglam_yamasi()
+        anahtar = "şifre: Gizli1234"
+        _, o = self.sor({"metin": anahtar, "motor": "claude"})
+        self.assertEqual(self.turler(o), ["onay_gerekli"])
+        _, o = self.sor({"metin": anahtar, "motor": "claude", "onayli": True})
+        self.assertEqual(self.turler(o), ["baglam_onay"])
+        _, o = self.sor({"metin": anahtar, "motor": "claude", "onayli": True, "baglam_karari": "ekleme"})
+        self.assertEqual(o[0]["tur"], "secim")
+
+    # ---- geçmiş maskeleme (bulgu 5)
+    def test_gecmise_maskeli_yazilir_motora_ham_gider(self):
+        sir = "sk-" + "abcdefghijklmnop1234567890"
+        self.motorlar["claude"].parcalar = ["Anahtarın ", sir, " olarak kaydedildi."]
+        _, o = self.sor({"metin": f"bu anahtarı kullan: {sir}", "motor": "claude", "onayli": True})
+        self.assertIn(sir, self.motorlar["claude"].cagrilar[0]["istem"], "motora giden metin maskelenmez")
+        kayit = o[-1]
+        self.assertEqual(kayit["kullanici_metin"], "bu anahtarı kullan: [GİZLİ:api_anahtari]")
+        self.assertEqual(kayit["asistan_metin"], "Anahtarın [GİZLİ:api_anahtari] olarak kaydedildi.")
+        ham = ms.AYAR_DOSYASI.read_text("utf-8")
+        self.assertNotIn(sir, ham)
+        s = self.sohbet(kayit["sohbet"])
+        self.assertEqual(s["mesajlar"][0]["metin"], "bu anahtarı kullan: [GİZLİ:api_anahtari]")
+        self.assertNotIn(sir, s["baslik"])
+
+    def test_dusuk_onemli_bulgu_uyari_olayi_gonderim_surer(self):
+        _, o = self.sor({"metin": "beni 0532 123 45 67 numarasından ara", "motor": "claude"})
+        self.assertEqual(self.turler(o)[:2], ["hassas_uyari", "secim"])
+        self.assertEqual((o[0]["kategori"], o[0]["onem"]), ("kisisel", "dusuk"))
+        self.assertEqual(len(self.motorlar["claude"].cagrilar), 1)
 
     def test_hafiza_adayi_yazilir(self):
         ms.ayarlari_yaz({"ayarlar": {"hafiza_ekle": False, "hafiza_aday": True}})
@@ -1490,6 +1582,22 @@ class HassasVeModelGonderHttpTesti(HttpTabani):
 
     ANAHTAR = "bu anahtarı kullan: sk-" + "abcdefghijklmnop1234567890"
 
+    def test_onayli_sir_siteye_ham_gecmise_maskeli(self):
+        gelen = []
+        (kod, v), = self.calistir(gelen, [{"metin": self.ANAHTAR, "onayli": True}])
+        self.assertEqual(kod, 200)
+        self.assertIn("abcdefghijklmnop1234567890", gelen[0]["metin"], "siteye giden metin maskelenmez")
+        self.assertEqual(v["sohbetler"][0]["mesajlar"][0]["metin"], "bu anahtarı kullan: [GİZLİ:api_anahtari]")
+        self.assertNotIn("abcdefghijklmnop1234567890", ms.AYAR_DOSYASI.read_text("utf-8"))
+        with mock.patch.object(ms, "site_konumu", return_value=None), \
+                mock.patch.object(ms.hafiza_kopru, "aday_yaz"):
+            kod, _ = self.post("/api/yanit-kaydet", {"sohbet": v["sohbet"], "mesaj_sira": 0, "site": "chatgpt",
+                                                     "metin": "Tamam, parola: Gizli1234 kaydedildi"})
+        self.assertEqual(kod, 200)
+        kayit = ms.ayarlari_oku()["sohbetler"][0]["mesajlar"][0]["yanitlar"]["chatgpt"]
+        self.assertEqual(kayit, "Tamam, parola: [GİZLİ:parola] kaydedildi")
+        self.assertNotIn("Gizli1234", ms.AYAR_DOSYASI.read_text("utf-8"))
+
     def test_hassas_metin_onay_ister_ve_gonderilmez(self):
         gelen = []
         (kod, v), = self.calistir(gelen, [{"metin": self.ANAHTAR}])
@@ -1774,6 +1882,64 @@ class JevBaglantiHttpTesti(MotorluHttpTabani):
         self.assertEqual(kod, 400)
         self.assertIn("401", v["hata"])
         self.assertNotIn("jev_onerilen", ms.ayarlari_oku()["sohbetler"][0]["mesajlar"][0])
+
+    # ---- jev_guvenli_sinifla: her Jev yolunda önce hassas tarama (bulgu 2)
+    def test_sarmalayici_hassas_metni_gondermez(self):
+        self.jev_yamasi(lambda m, s: self.secim("kod"))
+        for metinler in (["şifre: Gizli1234"], ["temiz soru", "yanıt AKIA" + "IOSFODNN7EXAMPLE"], ["ara 0532 123 45 67"]):
+            with self.subTest(metinler=metinler), self.assertRaises(ms.JevHassasHatasi) as h:
+                ms.jev_guvenli_sinifla(metinler, ["a", "b"])
+            self.assertEqual(str(h.exception), "hassas içerik, Jev'e gönderilmedi")
+            self.assertIsInstance(h.exception, ms.jev.JevHatasi)
+        with self.assertRaises(ms.JevHassasHatasi):     # gönderilecek birleşik metin de taranır
+            ms.jev_guvenli_sinifla(["temiz"], ["a", "b"], gonderilecek="parola: x1y2z3")
+        self.assertEqual(self.cagrilar, [])
+        self.assertEqual(ms.jev_guvenli_sinifla(["temiz", "metin"], ["a", "b"])["secim"], "kod")
+        self.assertEqual(self.cagrilar[0]["metin"], "temiz\nmetin")
+
+    def test_sor_yonlendirme_hassasta_jeve_gitmez(self):
+        self.jev_yamasi(lambda m, s: self.secim("kod") if "kod" in s else self.secim("zor"))
+        ms.ayarlari_yaz({"ayarlar": dict(HAFIZASIZ)})
+        _, o = self.sor({"metin": "şifre: Gizli1234 ile giriş yap", "onayli": True})
+        self.assertEqual(o[0]["tur"], "secim")
+        self.assertEqual((o[0]["kaynak"], o[0]["jev_notu"]), ("kural", "hassas içerik, Jev'e gönderilmedi"))
+        self.assertEqual(self.cagrilar, [])
+        _, o = self.sor({"metin": "Bu makaleyi özetle"})
+        self.assertEqual((o[0]["kaynak"], o[0]["jev_notu"]), ("jev", None))
+        self.assertEqual(len([c for c in self.cagrilar if "parola" not in c["secenekler"]]), 2)   # tür + zorluk
+
+    def test_oneri_kisisel_bilgide_jev_notu(self):
+        self.jev_yamasi(lambda m, s: self.secim("kod"))
+        ms.ayarlari_yaz({"ayarlar": dict(HAFIZASIZ)})
+        _, v = self.post("/api/oneri", {"metin": "ali@ornek.com adresine yaz"})
+        self.assertEqual((v["kaynak"], v["jev_notu"]), ("kural", "hassas içerik, Jev'e gönderilmedi"))
+        self.assertEqual(self.cagrilar, [])
+
+    def test_gonder_on_tarama_dusuk_onemli_bulguda_jeve_gitmez(self):
+        self.jev_yamasi(lambda m, s: self.secim("parola", 0.99))
+        ((kod, v),), gelen = self.gonder_dene([{"metin": "beni 0532 123 45 67 numarasından ara"}])
+        self.assertEqual((kod, v["gonderilen"]), (200, ["ChatGPT"]))
+        self.assertEqual(v["hassas_uyari"]["kategori"], "kisisel")
+        self.assertEqual(self.cagrilar, [])
+        self.assertEqual(len(gelen), 1)
+
+    def test_yanit_puanla_hassas_yanitta_jeve_gitmez(self):
+        self.jev_yamasi(lambda m, s: self.secim("chatgpt"))
+        for yanitlar in ({"chatgpt": "Anahtar: AKIA" + "IOSFODNN7EXAMPLE", "gemini": "B"},
+                         {"chatgpt": "A", "gemini": "ara 0532 123 45 67"}):
+            with self.subTest(yanitlar=yanitlar):
+                self.sohbet_kur(yanitlar)
+                kod, v = self.post("/api/yanit-puanla", {"sohbet": "s1", "mesaj_sira": 0})
+                self.assertEqual(kod, 200)
+                self.assertEqual((v["onerilen"], v["durum"]), (None, "hassas içerik, Jev'e gönderilmedi"))
+                self.assertNotIn("jev_onerilen", ms.ayarlari_oku()["sohbetler"][0]["mesajlar"][0])
+        ms.ayarlari_yaz({"ayarlar": {**HAFIZASIZ, "jev_yanit_puanla": True},
+                         "sohbetler": [{"id": "s1", "baslik": "x", "mesajlar": [
+                             {"metin": "şifre: Gizli1234 doğru mu?", "gonderilen": [], "sorunlar": [],
+                              "yanitlar": {"chatgpt": "A", "gemini": "B"}}]}]})
+        kod, v = self.post("/api/yanit-puanla", {"sohbet": "s1", "mesaj_sira": 0})
+        self.assertEqual(v["durum"], "hassas içerik, Jev'e gönderilmedi")
+        self.assertEqual(self.cagrilar, [])
 
     # ---- durum ve ayarlar
     def test_jev_durum_ucu(self):

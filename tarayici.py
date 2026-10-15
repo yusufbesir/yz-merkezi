@@ -6,7 +6,11 @@ Yalnızca uygulamaya ait ayrı bir profil kullanılır (varsayılan `%LOCALAPPDA
 Denetim bağlantısı bu süreçteki tek bir `cdp.BoruBaglantisi` nesnesidir: başka süreçler (ikinci bir uygulama
 örneği dahil) tarayıcıya bağlanamaz. İkinci örnek, pencere açmayı çalışan örnekten `POST /api/pencere-ac`
 ile ister (bkz. masaustu_sunucu.mevcut_ornegi_ac). Boru kapanınca (uygulama kapanınca) Edge de kapanır.
+
+Komut satırı (Win32_Process ile her yerel süreçten okunabilir) oturum belirteci TAŞIMAZ: uygulama penceresi tek
+kullanımlık açılış koduyla (`/ac/<kod>`) açılır; `#t=`/`?t=` biçimli adresler uygulama kipinde reddedilir.
 """
+import re
 import subprocess
 import threading
 import webbrowser
@@ -37,6 +41,26 @@ class TarayiciHatasi(cdp.CdpHatasi):
     """Tarayıcı başlatılamadığında kullanıcıya gösterilecek Türkçe hata."""
 
 
+_BELIRTECLI_ADRES = re.compile(r"[#?&]t=", re.IGNORECASE)
+
+
+def _adres_denetle(url):
+    """Uygulama penceresi adresinde belirteç parametresi olamaz (komut satırına sızmasın)."""
+    if _BELIRTECLI_ADRES.search(str(url)):
+        raise TarayiciHatasi("Adreste oturum belirteci var; güvenlik nedeniyle pencere açılmadı.")
+
+
+def edge_komutu(edge, ilk_url, uygulama=True):
+    """Denetim borulu ilk Edge sürecinin komut listesi (cdp.boruyla_baslat ekler: --remote-debugging-pipe)."""
+    return [edge, f"--user-data-dir={PROFIL}", *EDGE_BAYRAKLARI, "--window-size=1100,760",
+            f"--app={ilk_url}" if uygulama else ilk_url]
+
+
+def devret_komutu(edge, url):
+    """Çalışan Edge'e uygulama penceresi açtıran (adresi devredip çıkan) sürecin komut listesi."""
+    return [edge, f"--app={url}", f"--user-data-dir={PROFIL}"]
+
+
 def _edge_yolu():
     return next((y for y in EDGE_YOLLARI if Path(y).exists()), None)
 
@@ -65,9 +89,7 @@ def _boruyla_baslat(edge, ilk_url, uygulama):
     if _boru is not None:  # kapanmış eski bağlantının yazma ucu açık kalmasın
         _boru.kapat(bekleme=0)
         _boru = None
-    komut = [edge, f"--user-data-dir={PROFIL}", *EDGE_BAYRAKLARI, "--window-size=1100,760",
-             f"--app={ilk_url}" if uygulama else ilk_url]
-    b = cdp.boruyla_baslat(komut)
+    b = cdp.boruyla_baslat(edge_komutu(edge, ilk_url, uygulama))
     try:
         b.komut("Browser.getVersion", zaman=HAZIR_BEKLEME)
     except cdp.CdpHatasi as h:
@@ -87,6 +109,8 @@ def baslat(ilk_url, uygulama=True):
     Edge zaten çalışıyorsa adres yeni pencerede açılır. Edge yoksa adres varsayılan tarayıcıda açılır ve
     Türkçe uyarı döner; sorunsuzsa None döner. Aynı profille açık eski bir Edge varsa TarayiciHatasi.
     """
+    if uygulama:
+        _adres_denetle(ilk_url)
     with _kilit:
         if calisiyor_mu():
             return _uygulama_kipinde_devret(ilk_url) if uygulama else pencere_ac(ilk_url)
@@ -107,7 +131,10 @@ def _uygulama_kipinde_devret(url):
     if not edge:
         return "Microsoft Edge bulunamadı."
     try:
-        subprocess.Popen([edge, f"--app={url}", f"--user-data-dir={PROFIL}"], close_fds=True)
+        _adres_denetle(url)
+        subprocess.Popen(devret_komutu(edge, url), close_fds=True)
+    except TarayiciHatasi as h:
+        return str(h)
     except OSError as h:
         return f"Pencere açılamadı: {h}"
     return None

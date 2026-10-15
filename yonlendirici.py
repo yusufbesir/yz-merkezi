@@ -14,14 +14,28 @@ yonlendirme.json biçimi:
 TERCIH = {"motor": "claude" | "codex" | "gemini", "sinif": "hizli" | "dengeli" | "guclu"}. Bir (tür, zorluk) için
 aranış sırası: turler[tür][zorluk] → turler[tür]["hepsi"] → varsayilan[zorluk]. Dosya yoksa ya da bozuksa yerleşik
 varsayılan kullanılır ve sebep döner (uygulama açılışta kırılmaz).
+
+Konum: kullanıcının düzenlediği kopya uygulama veri klasöründedir (`%LOCALAPPDATA%\\YZMerkezi\\yonlendirme.json`,
+`YZ_YONLENDIRME` ile değişir); böylece sürüm klasörü güncellemede değişip eski sürüm temizlense de kurallar kalır.
+Kopya yoksa ilk okumada paketteki `yonlendirme.json` (şablon) oraya kopyalanır; var olan kopyaya hiç dokunulmaz.
 """
 import json
 import os
 import re
 from pathlib import Path
 
+import guvenlik
+
 KOK = Path(__file__).resolve().parent
-YONLENDIRME_DOSYASI = Path(os.environ.get("YZ_YONLENDIRME") or KOK / "yonlendirme.json")
+SABLON_DOSYASI = KOK / "yonlendirme.json"  # pakette gelen başlangıç kuralları (güncellemeyle değişebilir)
+
+
+def varsayilan_yonlendirme_dosyasi():
+    """Kullanıcı kopyasının yolu: YZ_YONLENDIRME ya da veri klasöründeki yonlendirme.json."""
+    return guvenlik.veri_yolu("YZ_YONLENDIRME", "yonlendirme.json")
+
+
+YONLENDIRME_DOSYASI = varsayilan_yonlendirme_dosyasi()
 
 TURLER = ("arastirma", "kod", "yazi", "ceviri", "ozet", "sohbet", "matematik")
 ZORLUKLAR = ("basit", "orta", "zor")
@@ -153,9 +167,36 @@ def kurallari_dogrula(ham):
     return {"varsayilan": varsayilan, "turler": turler}, uyarilar
 
 
+def kullanici_kopyasini_hazirla(yol=None, sablon=None):
+    """Kullanıcı kopyası yoksa şablonu kopyalar (var olan kopyaya asla dokunmaz). Döner: kopyanın yolu.
+
+    Kopyalanamazsa (izin, disk ...) sessizce geçer: kurallari_yukle yerleşik varsayılana düşer ve sebebi bildirir.
+    """
+    yol = Path(yol or YONLENDIRME_DOSYASI)
+    sablon = Path(sablon or SABLON_DOSYASI)
+    if os.path.lexists(yol) or not sablon.is_file():
+        return yol
+    gecici = yol.with_name(yol.name + ".tmp")
+    try:
+        yol.parent.mkdir(parents=True, exist_ok=True)
+        gecici.write_bytes(sablon.read_bytes())
+        if os.path.lexists(yol):  # bu arada başka bir süreç oluşturduysa onunkini koru
+            gecici.unlink()
+        else:
+            os.replace(gecici, yol)
+    except OSError as h:
+        guvenlik.hata_yaz(f"yonlendirme.json kullanıcı kopyası oluşturulamadı: {h}")
+    return yol
+
+
 def kurallari_yukle(dosya=None):
-    """yonlendirme.json'u okur. Döner: (kurallar, uyarilar); dosya yoksa/bozuksa yerleşik varsayılan + sebep."""
+    """yonlendirme.json'u okur. Döner: (kurallar, uyarilar); dosya yoksa/bozuksa yerleşik varsayılan + sebep.
+
+    Dosya verilmezse kullanıcı kopyası (veri klasörü) okunur; yoksa önce paketteki şablon oraya kopyalanır.
+    """
     yol = Path(dosya) if dosya else YONLENDIRME_DOSYASI
+    if not dosya and yol == varsayilan_yonlendirme_dosyasi():
+        kullanici_kopyasini_hazirla(yol)
     try:
         ham = json.loads(yol.read_text("utf-8"))
     except FileNotFoundError:

@@ -16,6 +16,15 @@ Sınırlar:
   atomik yazılır ve eski sürümler temizlenir. Başarısız güncellemede yalnızca bu işlemin kopyaladığı dosyalar geri
   alınır; eski sürüm ve işaretçi aynen kalır.
 - `.git` bulunan kök "geliştirme kurulumu"dur: kökteki dosyalar hiçbir zaman silinmez (yalnızca `surumler/` işlenir).
+- Silmeden önce her dosyanın sha256'sı manifestle karşılaştırılır; uyuşmayan (sonradan değiştirilmiş) dosya ATLANIR.
+  Silme Windows geri dönüşüm kutusuna yapılır (SHFileOperationW, FO_DELETE | FOF_ALLOWUNDO | FOF_NO_UI; yalnızca
+  sabit disklerde); taşınamazsa dosya kalıcı silinmez, atlanır ve günlüğe yazılır.
+- Bir önceki sürüm saklanır: temizlik etkin sürümü ve kalanlardan semver sırasında en yeni sürümü bırakır, daha
+  eskileri temizler. `--geri-al` işaretçiyi (doğrulama + duman testi sonrası) etkin sürümden küçük en yeni sürüme çevirir.
+- Aynı sürüm numarası farklı içerikle zaten kuruluysa güncelleme reddedilir (önce surum.py'deki SURUM artırılmalı).
+- `--guncelle` yalnızca YEREL bir klasördeki sürümün bütünlüğünü (manifestteki sha256) doğrular; manifest imzalı
+  değildir. İnternetten otomatik indirme eklenirse imzalı manifest (ör. Ed25519 imzası + uygulamaya gömülü açık
+  anahtar) zorunlu olmalıdır; aksi hâlde manifesti değiştirebilen biri kodu da değiştirebilir.
 
 Her adım `%LOCALAPPDATA%\\YZMerkezi\\guncelleme.log` dosyasına yazılır (YZ_GUNCELLEME_LOG ile değiştirilebilir).
 
@@ -23,7 +32,8 @@ Komut satırı:
     python guncelleme.py --yol                etkin sürüm klasörünü yazar (baslat.bat kullanır)
     python guncelleme.py --baslat             etkin sürümde masaustu_sunucu.py'yi pythonw ile başlatır
     python guncelleme.py --guncelle KLASOR    KLASOR'daki sürümü bu köke kurar
-    python guncelleme.py --temizle            eski sürümleri temizler
+    python guncelleme.py --temizle            eski sürümleri temizler (etkin + bir önceki sürüm kalır)
+    python guncelleme.py --geri-al            işaretçiyi bir önceki sürüme çevirir (doğrulama + duman testi sonrası)
     python guncelleme.py --durum              durum özetini JSON olarak yazar
 """
 import fnmatch
@@ -49,6 +59,14 @@ DUMAN_ZAMAN_ASIMI = 90             # sn
 DUMAN_MODULLERI = ("masaustu_sunucu", "motorlar", "surum")
 SEMVER = re.compile(r"^(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})$")
 FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+SAKLANAN_ONCEKI = 1                # temizlikte etkin sürümün yanında bırakılan önceki sürüm sayısı
+AYNI_SURUM_HATASI = "Aynı sürüm numarası farklı içerikle zaten kurulu; önce SURUM'u artırın"
+# SHFileOperationW (geri dönüşüm kutusuna silme)
+FO_DELETE = 0x0003
+FOF_SILENT, FOF_NOCONFIRMATION, FOF_ALLOWUNDO = 0x0004, 0x0010, 0x0040
+FOF_NOCONFIRMMKDIR, FOF_NOERRORUI = 0x0200, 0x0400
+FOF_NO_UI = FOF_SILENT | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_NOCONFIRMMKDIR
+DRIVE_FIXED = 3
 
 # Hangi yolda olursa olsun (herhangi bir parçası eşleşirse) asla silinmez ve manifeste girmez.
 KORUNAN_KALIPLAR = (
@@ -162,6 +180,49 @@ def sha256(yol):
         for parca in iter(lambda: f.read(1 << 20), b""):
             h.update(parca)
     return h.hexdigest()
+
+
+def semver_anahtari(ad):
+    """"1.10.0" → (1, 10, 0): sürüm klasörlerini sayısal sıralamak için (semver değilse ValueError)."""
+    m = SEMVER.match(str(ad))
+    if not m:
+        raise ValueError(f"semver değil: {ad}")
+    return tuple(int(x) for x in m.groups())
+
+
+def cop_kutusuna_tasi(yol):
+    """Dosyayı Windows geri dönüşüm kutusuna taşır (SHFileOperationW, FO_DELETE | FOF_ALLOWUNDO | FOF_NO_UI).
+
+    Yalnızca sabit diskteki (geri dönüşüm kutusu olan) normal dosyalar için denenir. Başarılıysa True; aksi hâlde
+    False döner ve dosya OLDUĞU GİBİ kalır (kalıcı silmeye asla düşülmez).
+    """
+    if os.name != "nt":
+        return False
+    tam = os.path.abspath(str(yol))
+    if not os.path.isfile(tam) or reparse_mi(tam):
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+        surucu = os.path.splitdrive(tam)[0]
+        if not surucu or ctypes.windll.kernel32.GetDriveTypeW(surucu + "\\") != DRIVE_FIXED:
+            return False
+
+        class SHFILEOPSTRUCTW(ctypes.Structure):
+            if ctypes.sizeof(ctypes.c_void_p) == 4:
+                _pack_ = 1  # shellapi.h: 32 bitte paketli
+            _fields_ = [("hwnd", wintypes.HWND), ("wFunc", wintypes.UINT), ("pFrom", wintypes.LPCWSTR),
+                        ("pTo", wintypes.LPCWSTR), ("fFlags", ctypes.c_ushort),
+                        ("fAnyOperationsAborted", wintypes.BOOL), ("hNameMappings", ctypes.c_void_p),
+                        ("lpszProgressTitle", wintypes.LPCWSTR)]
+
+        # pFrom çift NUL ile biter: Python dizesindeki "\0" + ctypes'ın eklediği sonlandırıcı.
+        islem = SHFILEOPSTRUCTW(None, FO_DELETE, tam + "\0", None, FOF_ALLOWUNDO | FOF_NO_UI, False, None, None)
+        kod = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(islem))
+    except (OSError, AttributeError, ValueError) as h:
+        gunluk_yaz(f"Geri dönüşüm kutusu kullanılamadı: {h}")
+        return False
+    return kod == 0 and not islem.fAnyOperationsAborted and not os.path.lexists(tam)
 
 
 def gelistirme_kurulumu_mu(kok):
@@ -369,6 +430,23 @@ def _geri_al(hedef, kopyalanan, olusan_klasorler):
     gunluk_yaz(f"GERİ ALINDI: {hedef} ({len(kopyalanan)} dosya kaldırıldı)")
 
 
+def _manifest_icerigi(manifest):
+    """Manifestin içerik kimliği: {küçük harf yol: (sha256, boyut)} (oluşturma zamanı vb. sayılmaz)."""
+    return {"/".join(yol_parcalari(g["yol"])).lower(): (g["sha256"].lower(), g["boyut"]) for g in manifest["dosyalar"]}
+
+
+def _ayni_surum_denetle(hedef, manifest):
+    """Hedef sürüm klasörü zaten varsa içeriği kaynakla aynı olmalı; değilse GuncellemeHatasi (hiçbir şey değişmez)."""
+    try:
+        kurulu = manifest_oku(hedef)
+    except ValueError as h:
+        gunluk_yaz(f"GÜNCELLEME REDDEDİLDİ: {hedef} zaten var ama manifesti okunamadı: {h}")
+        raise GuncellemeHatasi(f"Sürüm klasörü zaten var ama manifesti geçersiz ({h}); dokunulmadı.") from None
+    if kurulu["surum"] != manifest["surum"] or _manifest_icerigi(kurulu) != _manifest_icerigi(manifest):
+        gunluk_yaz(f"GÜNCELLEME REDDEDİLDİ: {AYNI_SURUM_HATASI} ({hedef})")
+        raise GuncellemeHatasi(AYNI_SURUM_HATASI)
+
+
 def guncelle(kurulum_koku, yeni_surum_klasoru):
     """Yeni sürümü `surumler/<surum>/` içine kurar, doğrular, işaretçiyi değiştirir, eski sürümleri temizler.
 
@@ -396,7 +474,8 @@ def guncelle(kurulum_koku, yeni_surum_klasoru):
     kopyalanan, olusan = [], []
     kopyalandi = False
     if hedef.exists():
-        gunluk_yaz(f"Sürüm klasörü zaten var, kopyalama atlandı: {hedef}")
+        _ayni_surum_denetle(hedef, manifest)
+        gunluk_yaz(f"Sürüm klasörü zaten var (içerik aynı), kopyalama atlandı: {hedef}")
     else:
         kopyalandi = True
         try:
@@ -464,14 +543,18 @@ def guncelle(kurulum_koku, yeni_surum_klasoru):
 # ---------------------------------------------------------------- temizlik
 
 def _sil(yol, sonuc, neden="manifest"):
+    """Dosyayı geri dönüşüm kutusuna taşır; olmazsa kalıcı SİLMEZ, atlar ve günlüğe yazar."""
     try:
-        os.unlink(yol)
-    except OSError as h:
-        sonuc["atlanan"].append({"yol": str(yol), "neden": f"silinemedi: {h}"})
-        gunluk_yaz(f"ATLANDI (silinemedi): {yol}: {h}")
+        tasindi = cop_kutusuna_tasi(yol)
+    except Exception as h:  # noqa: BLE001  (hiçbir hata kalıcı silmeye yol açmamalı)
+        gunluk_yaz(f"Geri dönüşüm kutusu hatası: {yol}: {type(h).__name__}: {h}")
+        tasindi = False
+    if not tasindi:
+        sonuc["atlanan"].append({"yol": str(yol), "neden": "geri dönüşüm kutusuna taşınamadı, kalıcı silinmedi"})
+        gunluk_yaz(f"ATLANDI (geri dönüşüm kutusuna taşınamadı, kalıcı silinmedi): {yol}")
         return False
     sonuc["silinen"].append(str(yol))
-    gunluk_yaz(f"SİLİNDİ ({neden}): {yol}")
+    gunluk_yaz(f"SİLİNDİ ({neden}) geri dönüşüm kutusuna: {yol}")
     return True
 
 
@@ -529,6 +612,16 @@ def _surum_klasorunu_temizle(d, sonuc):
             _atla(sonuc, tam, "dosya değil")
             hepsi = False
             continue
+        try:
+            uyusuyor = sha256(tam) == g["sha256"].lower()
+        except OSError as h:
+            _atla(sonuc, tam, f"okunamadı ({h}), silinmedi")
+            hepsi = False
+            continue
+        if not uyusuyor:
+            _atla(sonuc, tam, "sha256 manifestle uyuşmuyor (sonradan değiştirilmiş), silinmedi")
+            hepsi = False
+            continue
         if not _sil(tam, sonuc):
             hepsi = False
             continue
@@ -548,10 +641,20 @@ def _surum_klasorunu_temizle(d, sonuc):
     _bos_klasorleri_kaldir(d, sonuc)
 
 
-def eski_surumleri_temizle(kurulum_koku, korunan=None):
+def _manifestli_mi(klasor):
+    try:
+        manifest_oku(klasor)
+        return True
+    except ValueError:
+        return False
+
+
+def eski_surumleri_temizle(kurulum_koku, korunan=None, sakla=SAKLANAN_ONCEKI):
     """`surumler/` altındaki korunan dışı sürümlerden yalnızca kendi manifestlerindeki dosyaları siler.
 
-    `korunan` ve guncel.json'un gösterdiği sürüme dokunulmaz. {"silinen": [...], "atlanan": [{yol, neden}]}.
+    `korunan` ve guncel.json'un gösterdiği sürüme dokunulmaz; ayrıca geri alma için kalan manifestli sürümlerden
+    semver sırasında en yeni `sakla` tanesi (varsayılan 1: bir önceki sürüm) bırakılır.
+    {"silinen": [...], "atlanan": [{yol, neden}]} döndürür.
     """
     kok = Path(os.path.realpath(kurulum_koku))
     sonuc = {"silinen": [], "atlanan": []}
@@ -571,6 +674,13 @@ def eski_surumleri_temizle(kurulum_koku, korunan=None):
     isaret = isaretci_oku(kok)
     if isaret:
         koru.add(isaret["surum"])
+    adaylar = sorted((d.name for d in surumler.iterdir()
+                      if d.name not in koru and SEMVER.match(d.name) and not reparse_mi(d) and d.is_dir()
+                      and not os.path.lexists(d / ".git") and _manifestli_mi(d)),
+                     key=semver_anahtari, reverse=True)
+    for ad in adaylar[:max(0, int(sakla))]:
+        koru.add(ad)
+        gunluk_yaz(f"Önceki sürüm geri alma için saklandı: {surumler / ad}")
     for d in sorted(surumler.iterdir(), key=lambda p: p.name):
         if d.name in koru:
             continue
@@ -591,6 +701,55 @@ def eski_surumleri_temizle(kurulum_koku, korunan=None):
         _surum_klasorunu_temizle(d, sonuc)
     gunluk_yaz(f"TEMİZLİK BİTTİ: silinen {len(sonuc['silinen'])}, atlanan {len(sonuc['atlanan'])}")
     return sonuc
+
+
+# ---------------------------------------------------------------- geri alma
+
+def onceki_surum(kurulum_koku):
+    """Etkin sürümden semver sırasında küçük en yeni sürüm klasörünün adı (yoksa None)."""
+    kok = Path(os.path.realpath(kurulum_koku))
+    isaret = isaretci_oku(kok)
+    surumler = kok / SURUMLER
+    if not isaret or reparse_mi(surumler) or not surumler.is_dir():
+        return None
+    simdiki = semver_anahtari(isaret["surum"])
+    adaylar = [d.name for d in surumler.iterdir()
+               if SEMVER.match(d.name) and semver_anahtari(d.name) < simdiki and d.is_dir() and not reparse_mi(d)]
+    return max(adaylar, key=semver_anahtari) if adaylar else None
+
+
+def geri_al(kurulum_koku):
+    """guncel.json'u bir önceki sürüme çevirir: o sürüm önce manifestine göre doğrulanır ve duman testinden geçer.
+
+    Hiçbir dosya silinmez (yeni sürüm de yerinde kalır). Başarısızlıkta GuncellemeHatasi; işaretçi değişmez.
+    """
+    kok = Path(os.path.realpath(kurulum_koku))
+    isaret = isaretci_oku(kok)
+    gunluk_yaz(f"GERİ ALMA BAŞLADI: kök={kok} etkin={isaret['surum'] if isaret else None}")
+    if not isaret:
+        gunluk_yaz("GERİ ALMA REDDEDİLDİ: geçerli guncel.json yok")
+        raise GuncellemeHatasi("Etkin sürüm işaretçisi (guncel.json) yok ya da geçersiz.")
+    onceki = onceki_surum(kok)
+    if not onceki:
+        gunluk_yaz("GERİ ALMA REDDEDİLDİ: önceki sürüm yok")
+        raise GuncellemeHatasi("Geri alınacak önceki sürüm bulunamadı.")
+    hedef = kok / SURUMLER / onceki
+    dogrulama = kaynak_dogrula(hedef)
+    if not dogrulama["gecerli"] or dogrulama["surum"] != onceki:
+        sorun = "; ".join(dogrulama["sorunlar"][:5]) or "sürüm uyuşmuyor"
+        gunluk_yaz(f"GERİ ALMA BAŞARISIZ (doğrulama): {onceki}: {sorun}")
+        raise GuncellemeHatasi(f"Önceki sürüm ({onceki}) doğrulanamadı: {sorun}")
+    tamam, ileti = duman_testi(hedef)
+    if not tamam:
+        gunluk_yaz(f"GERİ ALMA BAŞARISIZ (duman testi): {onceki}: {ileti}")
+        raise GuncellemeHatasi(f"Önceki sürüm ({onceki}) duman testinden geçemedi: {ileti}")
+    try:
+        isaretci_yaz(kok, onceki)
+    except OSError as h:
+        gunluk_yaz(f"GERİ ALMA BAŞARISIZ (işaretçi yazılamadı): {h}")
+        raise GuncellemeHatasi(f"guncel.json yazılamadı: {h}") from None
+    gunluk_yaz(f"GERİ ALMA TAMAMLANDI: {isaret['surum']} -> {onceki}")
+    return {"onceki": isaret["surum"], "surum": onceki, "yol": str(hedef)}
 
 
 # ---------------------------------------------------------------- durum
@@ -638,6 +797,13 @@ def main(argumanlar=None):
     if komut == "--temizle":
         print(json.dumps(eski_surumleri_temizle(KOK, korunan=(isaretci_oku(KOK) or {}).get("surum")),
                          ensure_ascii=False, indent=2))
+        return 0
+    if komut == "--geri-al":
+        try:
+            print(json.dumps(geri_al(KOK), ensure_ascii=False, indent=2))
+        except GuncellemeHatasi as h:
+            print(f"Geri alma yapılmadı, etkin sürüm değişmedi: {h}")
+            return 1
         return 0
     if komut == "--guncelle" and len(a) == 2:
         try:

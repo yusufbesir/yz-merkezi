@@ -58,7 +58,10 @@ class KasaTestiTaban(unittest.TestCase):
     def kasa_kur(self, **kw):
         kasa = gecici_kasa(**kw)
         self.addCleanup(shutil.rmtree, kasa, True)
-        yama = mock.patch.dict(os.environ, {"YZ_KASA": str(kasa)})
+        ozet_klasoru = Path(tempfile.mkdtemp(prefix="yzozet_"))   # hafiza.py güven özeti: her test kendi dosyası
+        self.addCleanup(shutil.rmtree, ozet_klasoru, True)
+        self.ozet_dosyasi = ozet_klasoru / "hafiza-py.sha256"
+        yama = mock.patch.dict(os.environ, {"YZ_KASA": str(kasa), "YZ_HAFIZA_HASH": str(self.ozet_dosyasi)})
         yama.start()
         self.addCleanup(yama.stop)
         hk._durumu_yaz(None, None)
@@ -264,7 +267,9 @@ class DurumTesti(KasaTestiTaban):
     def test_anahtarlar_ve_degerler(self):
         kasa = self.kasa_kur()
         d = hk.durum()
-        self.assertEqual(set(d), {"kasa_var", "hafiza_py_var", "son_mod", "son_hata", "kasa"})
+        self.assertEqual(set(d), {"kasa_var", "hafiza_py_var", "son_mod", "son_hata", "kasa", "hash_degisti",
+                                  "hash_uyarisi"})
+        self.assertEqual((d["hash_degisti"], d["hash_uyarisi"]), (False, None))
         self.assertEqual((d["kasa_var"], d["hafiza_py_var"], d["kasa"]), (True, True, str(kasa)))
 
     def test_varsayilan_kasa_ortam_degiskeni_yoksa(self):
@@ -273,7 +278,7 @@ class DurumTesti(KasaTestiTaban):
             self.assertEqual(str(hk.kasa_yolu()), r"D:\YusufII\HAFIZAM1\kasa")
 
 
-class SunucuEntegrasyonTesti(KasaTestiTaban):
+class HafizaSunucuTabani(KasaTestiTaban):
     """/api/gonder ve /api/yanit-kaydet: gönderilen metnin başına bağlam eklenir; geçmiş ve aday kaydı doğru tutulur."""
 
     def setUp(self):
@@ -288,7 +293,8 @@ class SunucuEntegrasyonTesti(KasaTestiTaban):
         threading.Thread(target=self.sunucu.serve_forever, daemon=True).start()
         self.addCleanup(self.sunucu.server_close)
         self.addCleanup(self.sunucu.shutdown)
-        ms.ayarlari_yaz({"secili": {"site:gemini": False, "site:claude": False}})
+        # Bu sınıfın eski testleri otomatik bağlam yolunu sınar; onaylı yol BaglamOnayiGonderTesti'nde.
+        ms.ayarlari_yaz({"secili": {"site:gemini": False, "site:claude": False}, "ayarlar": {"hafiza_onay": False}})
 
     def istek(self, yol, veri=None):
         govde = None if veri is None else json.dumps(veri).encode()
@@ -329,6 +335,10 @@ class SunucuEntegrasyonTesti(KasaTestiTaban):
                 mock.patch.object(ms, "kendi_pencere", return_value=None):
             v = self.istek("/api/gonder", dict(metin=metin, **ek))
         return v, "".join(c.args[0] for c in b.yazi_ekle.call_args_list)
+
+
+class SunucuEntegrasyonTesti(HafizaSunucuTabani):
+    """Otomatik bağlam yolu (hafiza_onay kapalı)."""
 
     def test_gonderilen_metnin_basina_baglam_eklenir(self):
         v, yazilan = self.gonder("Hangi dili severim?")
@@ -373,6 +383,7 @@ class SunucuEntegrasyonTesti(KasaTestiTaban):
     def test_varsayilan_ayarlar_acik(self):
         a = ms.ayarlari_oku()["ayarlar"]
         self.assertEqual((a["hafiza_ekle"], a["hafiza_aday"]), (True, True))
+        self.assertIs(ms.VARSAYILAN_AYARLAR["hafiza_onay"], True)
 
     def test_yanit_kaydedilince_aday_yazilir_ham_soruyla(self):
         v, _ = self.gonder("Hangi dili severim?")
@@ -405,6 +416,142 @@ class SunucuEntegrasyonTesti(KasaTestiTaban):
         with self.assertRaises(urllib.error.HTTPError) as h:
             urllib.request.build_opener(urllib.request.ProxyHandler({})).open(talep, timeout=10)
         self.assertEqual(h.exception.code, 403)
+
+
+class HashDenetimiTesti(KasaTestiTaban):
+    """hafiza.py bütünlüğü: ilk başarılı çalıştırmada özet yazılır; değişirse araç çalıştırılmaz; onaydan sonra çalışır."""
+
+    def test_ilk_basarili_calistirmada_ozet_yazilir(self):
+        kasa = self.kasa_kur()
+        self.assertFalse(self.ozet_dosyasi.exists())
+        self.assertEqual(hk.baglam_getir("Hangi dil?")["metin"], BEKLENEN_BAGLAM)
+        import hashlib
+        beklenen = hashlib.sha256((kasa / "araclar" / "hafiza.py").read_bytes()).hexdigest()
+        self.assertEqual(self.ozet_dosyasi.read_text("utf-8").strip(), beklenen)
+
+    def test_hatali_ilk_calistirmada_ozet_yazilmaz(self):
+        self.kasa_kur()
+        hk.baglam_getir("HATA-KODU")
+        self.assertFalse(self.ozet_dosyasi.exists())
+
+    def test_degisirse_calistirilmaz_onaydan_sonra_calisir(self):
+        kasa = self.kasa_kur()
+        hk.baglam_getir("Hangi dil?")
+        (kasa / "argv.json").unlink()
+        (kasa / "araclar" / "hafiza.py").write_text(SAHTE_ARAC + "\n# kötü niyetli değişiklik\n", encoding="utf-8")
+        sonuc = hk.baglam_getir("Hangi dil?")
+        self.assertEqual(sonuc["metin"], "")
+        self.assertIn("hafiza.py değişmiş", sonuc["sebep"])
+        self.assertFalse((kasa / "argv.json").exists(), "değişmiş araç çalıştırılmamalı")
+        d = hk.durum()
+        self.assertTrue(d["hash_degisti"])
+        self.assertIn("Ayarlar → Hafıza", d["hash_uyarisi"])
+        self.assertEqual(hk.baglam_ekle("Hangi dil?"), ("Hangi dil?", None))
+        # kullanıcı onaylar: yeni özet kabul edilir, araç yeniden çalışır
+        self.assertTrue(hk.hash_onayla()["tamam"])
+        self.assertFalse(hk.durum()["hash_degisti"])
+        self.assertEqual(hk.baglam_getir("Hangi dil?")["metin"], BEKLENEN_BAGLAM)
+        self.assertTrue((kasa / "argv.json").exists())
+
+    def test_onay_araci_yoksa_basarisiz(self):
+        self.kasa_kur(hafiza_py=False)
+        self.assertFalse(hk.hash_onayla()["tamam"])
+        self.assertFalse(self.ozet_dosyasi.exists())
+
+    def test_bozuk_ozet_dosyasi_ilk_gorus_sayilir(self):
+        self.kasa_kur()
+        self.ozet_dosyasi.write_text("bozuk", encoding="utf-8")
+        self.assertEqual(hk.baglam_getir("Hangi dil?")["metin"], BEKLENEN_BAGLAM)
+        self.assertRegex(self.ozet_dosyasi.read_text("utf-8").strip(), r"^[0-9a-f]{64}$")
+
+    def test_varsayilan_ozet_yolu_veri_klasorunde(self):
+        with mock.patch.dict(os.environ):
+            os.environ.pop("YZ_HAFIZA_HASH", None)
+            self.assertEqual(hk.hash_dosyasi(), ms.guvenlik.veri_klasoru() / "hafiza-py.sha256")
+
+
+class HashOnayHttpTesti(HafizaSunucuTabani):
+    """/api/hafiza-durum uyarısı ve /api/hafiza-onayla (belirteçli)."""
+
+    def test_hafiza_onayla_ucu(self):
+        hk.baglam_getir("Hangi dil?")
+        (self.kasa / "araclar" / "hafiza.py").write_text(SAHTE_ARAC + "\n# yeni sürüm\n", encoding="utf-8")
+        d = self.istek("/api/hafiza-durum")
+        self.assertTrue(d["hash_degisti"])
+        v, yazilan = self.gonder("Hangi dili severim?")
+        self.assertEqual(yazilan, "Hangi dili severim?", "değişmiş araç çalışmaz; mesaj bağlamsız gider")
+        ms.is_kilidi = threading.Lock()
+        # belirteçsiz onay reddedilir
+        talep = urllib.request.Request(f"http://127.0.0.1:{self.sunucu.server_port}/api/hafiza-onayla", b"{}",
+                                       {"Content-Type": "application/json"})
+        with self.assertRaises(urllib.error.HTTPError) as h:
+            urllib.request.build_opener(urllib.request.ProxyHandler({})).open(talep, timeout=10)
+        self.assertEqual(h.exception.code, 403)
+        self.assertTrue(self.istek("/api/hafiza-durum")["hash_degisti"])
+        v = self.istek("/api/hafiza-onayla", {})
+        self.assertTrue(v["tamam"])
+        self.assertFalse(v["durum"]["hash_degisti"])
+        _, yazilan = self.gonder("Hangi dili severim?")
+        self.assertTrue(yazilan.startswith("Bağlam (kişisel notlarımdan"))
+
+
+class BaglamOnayiGonderTesti(HafizaSunucuTabani):
+    """Gelişmiş kip /api/gonder: bağlam sitelere gitmeden önce gösterilir (hafiza_onay varsayılan AÇIK)."""
+
+    def setUp(self):
+        super().setUp()
+        ms.ayarlari_yaz({"secili": {"site:gemini": False, "site:claude": False}})   # varsayılan: onay açık
+        ms._BAGLAM_ONAYLARI.clear()
+
+    def test_baglam_onayi_istenir_gonderim_ve_kayit_yok(self):
+        v, yazilan = self.gonder("Hangi dili severim?")
+        self.assertEqual((v["tur"], v["baglam_onay"]), ("baglam_onay", True))
+        self.assertEqual((v["baglam"], v["karakter"]), (BEKLENEN_BAGLAM, len(BEKLENEN_BAGLAM)))
+        self.assertTrue(v["baglam_kimligi"])
+        self.assertEqual(yazilan, "", "onay gelmeden siteye hiçbir şey yazılmaz")
+        self.assertEqual(ms.ayarlari_oku()["sohbetler"], [], "kayıt da yapılmaz")
+        return v
+
+    def test_ekle_karari_gosterilen_baglami_ekler(self):
+        v = self.test_baglam_onayi_istenir_gonderim_ve_kayit_yok()
+        v2, yazilan = self.gonder("Hangi dili severim?", baglam_karari="ekle", baglam_kimligi=v["baglam_kimligi"])
+        self.assertEqual(v2["gonderilen"], ["ChatGPT"])
+        self.assertTrue(yazilan.startswith("Bağlam (kişisel notlarımdan"))
+        self.assertTrue(yazilan.endswith("---\nHangi dili severim?"))
+        self.assertEqual(v2["sohbetler"][0]["mesajlar"][0]["baglam"]["metin"], BEKLENEN_BAGLAM)
+        ms.is_kilidi = threading.Lock()
+        # aynı kimlik ikinci kez kullanılamaz: yeniden onay istenir
+        v3, yazilan = self.gonder("Hangi dili severim?", baglam_karari="ekle", baglam_kimligi=v["baglam_kimligi"])
+        self.assertTrue(v3.get("baglam_onay"))
+        self.assertEqual(yazilan, "")
+
+    def test_ekleme_karari_baglamsiz_gonderir_ve_araci_calistirmaz(self):
+        v, yazilan = self.gonder("Merhaba", baglam_karari="ekleme")
+        self.assertEqual((yazilan, v["baglam"]), ("Merhaba", None))
+        self.assertFalse((self.kasa / "argv.json").exists())
+
+    def test_baska_mesaja_kimlik_gecmez(self):
+        v, _ = self.gonder("Hangi dili severim?")
+        v2, yazilan = self.gonder("Başka bir soru", baglam_karari="ekle", baglam_kimligi=v["baglam_kimligi"])
+        self.assertTrue(v2.get("baglam_onay"), "onay o mesaja özgü; başka metinde yeniden sorulur")
+        self.assertEqual(yazilan, "")
+
+    def test_bos_baglamda_onay_istenmez(self):
+        v, yazilan = self.gonder("BOS-BAGLAM mesajı")
+        self.assertEqual((yazilan, v["gonderilen"]), ("BOS-BAGLAM mesajı", ["ChatGPT"]))
+
+    def test_gecersiz_karar_400(self):
+        for ek in ({"baglam_karari": "evet"}, {"baglam_karari": "ekle", "baglam_kimligi": "../x"}):
+            with self.subTest(ek=ek), self.assertRaises(urllib.error.HTTPError) as h:
+                self.gonder("Merhaba", **ek)
+            self.assertEqual(h.exception.code, 400)
+
+    def test_ayar_kapaliysa_eski_otomatik_davranis(self):
+        self.istek("/api/ayar", {"hafiza_onay": False})
+        v, yazilan = self.gonder("Hangi dili severim?")
+        self.assertTrue(yazilan.startswith("Bağlam (kişisel notlarımdan"))
+        with self.assertRaises(urllib.error.HTTPError):
+            self.istek("/api/ayar", {"hafiza_onay": "hayır"})
 
 
 if __name__ == "__main__":

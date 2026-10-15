@@ -17,29 +17,15 @@ const pencereAlani = $("#pencereler");
 const mesajKutusu = $("#mesaj");
 const sistemKutusu = $("#sistem");
 
-// ------------------------------------------------------------ istek belirteci
-// Sunucu belirteci adresin parçasında (#t=...) verir: sunucuya gitmez, burada sessionStorage'a alınır ve
-// adresten silinir. Her /api/ isteği X-YZ-Token başlığıyla gider; belirteçsiz istekler 403 alır.
-const BELIRTEC_ANAHTARI = "yzm.belirtec";
-let bellekBelirteci = "";
-(function belirteciAl() {
-  const m = /[#&]t=([A-Za-z0-9_-]+)/.exec(location.hash);
-  if (m) {
-    bellekBelirteci = m[1];
-    try { sessionStorage.setItem(BELIRTEC_ANAHTARI, m[1]); } catch (_) { /* saklanamazsa bellekte kalır */ }
-    history.replaceState(null, "", location.pathname + location.search);
-  }
-})();
-function belirtec() {
-  if (bellekBelirteci) return bellekBelirteci;
-  try { return sessionStorage.getItem(BELIRTEC_ANAHTARI) || ""; } catch (_) { return ""; }
-}
+// ------------------------------------------------------------ oturum
+// Oturum belirteci bu sayfaya HİÇ gelmez: sunucu tarayıcıyı tek kullanımlık açılış koduyla (/ac/<kod>) açar ve
+// belirteci HttpOnly; SameSite=Strict çerezine koyar. /api/ istekleri yalnızca bu çerezle (aynı köken) gider.
 
 // ------------------------------------------------------------ yardımcılar
 
 async function api(yol, govde) {
-  const secenek = govde === undefined ? { headers: { "X-YZ-Token": belirtec() } } : {
-    method: "POST", headers: { "X-YZ-Token": belirtec(), "Content-Type": "application/json" }, body: JSON.stringify(govde),
+  const secenek = govde === undefined ? { credentials: "same-origin" } : {
+    method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify(govde),
   };
   const yanit = await fetch(yol, secenek);
   const veri = await yanit.json().catch(() => ({}));
@@ -339,7 +325,7 @@ async function pencereyeGonder(p, metin, sistem) {
   try {
     const yanit = await fetch("/api/sohbet", {
       method: "POST",
-      headers: { "X-YZ-Token": belirtec(), "Content-Type": "application/json" },
+      credentials: "same-origin", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ saglayici: p.saglayici, model: p.model, mesajlar, sistem }),
       signal: p.denetleyici.signal,
     });

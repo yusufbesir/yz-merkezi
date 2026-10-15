@@ -131,7 +131,9 @@
           <p class="aciklama">Hafıza OS kasandaki notlar, hangi motor yanıtlarsa yanıtlasın aynı kaynaktan bağlam olarak verilebilir. Eklenen bağlam seçilen motora (yani o şirketin sunucusuna) gider; sır benzeri satırlar (anahtar, parola, şifre) dışarıda bırakılır.</p>
           <div class="ayar-satir"><div><b>Hafızayı mesaja ekle</b><small>Gönderilen mesajın başına kişisel notlarından ilgili birkaç satır eklenir. Bağlam bulunamazsa ya da hafıza aracı yanıt vermezse mesaj olduğu gibi gider.</small></div><label class="anahtar"><input type="checkbox" id="ayarHafizaEkle"><span></span></label></div>
           <div class="ayar-satir"><div><b>Yanıtları hafızaya aday olarak yaz</b><small>Alınan yanıtların kısa özeti kasanın gelen kutusuna eklenir (yalnızca ekleme; var olan notlara dokunulmaz, katalog ve Mem0'a doğrudan yazılmaz).</small></div><label class="anahtar"><input type="checkbox" id="ayarHafizaAday"><span></span></label></div>
+          <div class="ayar-satir"><div><b>Hafıza bağlamı için her seferinde onay iste</b><small>Bağlam motora gitmeden önce gösterilir: "Ekleyerek gönder / Bağlamsız gönder / Vazgeç". Kapalıysa bulunan bağlam sormadan eklenir.</small></div><label class="anahtar"><input type="checkbox" id="ayarHafizaOnay"><span></span></label></div>
           <p class="aciklama" id="hafizaDurum">Durum okunuyor…</p>
+          <button type="button" id="hafizaOnayla" hidden>hafiza.py'nin yeni sürümünü onayla</button>
           <p class="aciklama" id="hafizaKasa"></p>
         </section>
 

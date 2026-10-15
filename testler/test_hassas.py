@@ -96,8 +96,8 @@ class KimlikTesti(unittest.TestCase):
                 self.assertEqual(hassas.tara(metin)["kategori"], "kimlik")
 
     def test_tara_gecersiz_ya_da_baska_sayi(self):
+        self.assertEqual(hassas.tara("telefon 05321234567")["kategori"], "kisisel")   # 0 ile başlar: kimlik değil, telefon
         for metin in (f"numara {GECERSIZ_TC}",
-                      "telefon 05321234567",            # 0 ile başlar
                       "tarih 2026-10-11",
                       "toplam 123456789012345 TL",      # 15 haneli sayı içinde 11 haneli değil
                       f"sipariş {GECERLI_TC}9"):        # 12 hane
@@ -128,16 +128,19 @@ class ParolaTesti(unittest.TestCase):
                 self.assertEqual((s["kategori"], s["eslesme_sayisi"]), ("parola", 1))
 
     def test_eposta_tek_basina_veya_duz_metin(self):
+        # Parola değil: yalnızca düşük önemli "kisisel" (e-posta adresi) uyarısı, onay istenmez.
         for metin in ("bana ali@ornek.com adresinden yaz", "ali@ornek.com, toplantı yarın", "ali@ornek.com: yarın görüşelim",
                       "ali@ornek.com: https://ornek.com/sayfa", "ali@ornek.com: veli@ornek.com"):
             with self.subTest(metin=metin):
-                self.assertEqual(hassas.tara(metin)["kategori"], "yok")
+                s = hassas.tara(metin)
+                self.assertEqual((s["kategori"], s["onem"]), ("kisisel", "dusuk"))
+                self.assertFalse(hassas.onay_gerekli_mi(s))
 
 
 class SonucBicimiTesti(unittest.TestCase):
     def test_yok(self):
         self.assertEqual(hassas.tara("Merhaba dünya"),
-                         {"kategori": "yok", "eslesme_sayisi": 0, "ornek": "", "kategoriler": []})
+                         {"kategori": "yok", "eslesme_sayisi": 0, "ornek": "", "kategoriler": [], "onem": None})
         self.assertEqual(hassas.tara("")["kategori"], "yok")
         self.assertEqual(hassas.tara(None)["kategori"], "yok")
 
@@ -146,8 +149,8 @@ class SonucBicimiTesti(unittest.TestCase):
         s = hassas.tara("anahtar: " + anahtar)
         self.assertEqual(s["ornek"], "sk-a***")
         self.assertNotIn("bcdefgh", repr(s))
-        self.assertEqual(hassas.maskele("12345678901"), "1234***")
-        self.assertEqual(hassas.maskele("ab"), "ab***")
+        self.assertEqual(hassas.ornek_maskele("12345678901"), "1234***")
+        self.assertEqual(hassas.ornek_maskele("ab"), "ab***")
 
     def test_parola_maskesi_degeri_sizdirmaz(self):
         s = hassas.tara("password: hunter2xyz")
@@ -182,6 +185,141 @@ class SonucBicimiTesti(unittest.TestCase):
         for metin in ("a" * 500000, "a@" * 100000, "1" * 300000, "sk-" + "a" * 300000, "pin " * 100000):
             hassas.tara(metin)
         self.assertLess(time.monotonic() - baslangic, 10)
+
+
+# ---------------------------------------------------------------- genişletilmiş kalıplar (güvenlik denetimi bulgu 6)
+
+class GenisKaliplarTesti(unittest.TestCase):
+    POZITIF = {
+        "api_anahtari": [
+            "AKIA" + "IOSFODNN7EXAMPLE",
+            "aws_secret_access_key = " + "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+            "AWS Secret Key: " + "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+            "token ya29." + "a0AfH6SMBx1234567890abcdefgh",
+            "gho_" + "a1B2" * 9, "ghu_" + "a1B2" * 9, "ghs_" + "a1B2" * 9, "ghr_" + "a1B2" * 9,
+            "github_pat_" + "11ABCDEFG0" * 5,
+            "xoxa-" + "1234567890-abcdef", "xoxp-" + "1234567890-abcdef", "xoxr-" + "1234567890-abcdef",
+            "xoxs-" + "1234567890-abcdef",
+            "sk_live_" + "51HabcdefGHIJKLmnop", "rk_live_" + "51HabcdefGHIJKLmnop",
+            "SG." + "abcdefghijklmnopqrstuv" + "." + "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123",
+            "SK" + "0123456789abcdef" * 2,
+            "eyJhbGciOiJIUzI1NiJ9" + ".eyJzdWIiOiIxMjM0NTY3ODkwIn0" + ".dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
+            "-----BEGIN EC PRIVATE KEY-----\nMHcCAQEE\n-----END EC PRIVATE KEY-----",
+            "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk\n-----END OPENSSH PRIVATE KEY-----",
+            "Authorization: Bearer " + "abcDEF123456ghiJKL789",
+        ],
+        "parola": [
+            "postgres://" + "admin:S3cretPw@db.ornek.com:5432/app",
+            "postgresql://" + "u:p4ss@localhost/db",
+            "mongodb://" + "kullanici:Gizli123@cluster0.mongodb.net",
+            "mongodb+srv://" + "kullanici:Gizli123@cluster0.mongodb.net/test",
+            "Server=sql.ornek.com;Database=app;User Id=sa;" + "Password=Gizli123!;",
+            "Data Source=.\\SQLEXPRESS;Initial Catalog=x;" + "Pwd=abc12345",
+        ],
+        "kisisel": [
+            "beni 0532 123 45 67 numarasından ara", "+90 532 123 45 67", "+905321234567", "5321234567",
+            "e-posta: yusuf.ornek@alanadi.com.tr",
+        ],
+        "olasi_anahtar": [
+            "anahtar " + "aB3dE5fG7hJ9kL1mN3pQ5rS7tV9wX1yZ3bC5",
+            "hex 9fceb02d0ae598e95dc970b74767f19372d61af8",
+            "deger=" + "Zm9vYmFyQmF6UXV4MTIzNDU2Nzg5MGFiY2RlZmdo",
+        ],
+    }
+    NEGATIF = [
+        # sıradan Türkçe cümleler
+        "Yarın sabah toplantıya katılabilir misin? Raporu da getir lütfen.",
+        "Şifreleme algoritmalarını karşılaştıran bir makale yazar mısın?",
+        "Parolamı unuttum, nasıl sıfırlarım?",
+        "Bearer token nedir, ne işe yarar?",
+        "AWS'de S3 kovası nasıl açılır?",
+        # URL'ler
+        "https://www.ornek.com/makaleler/2026/turkce-dil-rehberi-baslangic-icin?sayfa=12&id=345",
+        "https://github.com/yusufbesir/yz-merkezi/blob/main/README.md",
+        "postgres://localhost:5432/veritabani",     # kullanıcı/parola yok
+        "mongodb://cluster0.mongodb.net/test",
+        # tarih/saat
+        "15.10.2026 14:30", "2026-10-15T14:30:00+03:00", "Saat 09:45'te buluşalım, 3 Kasım 2026.",
+        # kısa sayılar ve kimlikler
+        "Sipariş no 12345, tutar 1.250,00 TL", "Oda 304, kat 3", "550e8400-e29b-41d4-a716-446655440000",
+        "sk_test_" + "51HabcdefGHIJKLmnop",          # canlı değil, test anahtarı
+        "SK" + "0123456789abcdef",                  # kısa
+        "xoxz-1234567890-abcdef",
+        "eyJ kısa.parça.bu",
+        "bu-cok-uzun-ama-sadece-kucuk-harfli-ve-tireli-bir-sozcuk-dizisi-123",
+        "-----BEGIN CERTIFICATE-----",
+        "Telefon kodu 532, 12 haneli: 905321234567890",
+    ]
+
+    def test_pozitifler(self):
+        for kategori, ornekler in self.POZITIF.items():
+            for metin in ornekler:
+                with self.subTest(kategori=kategori, metin=metin[:40]):
+                    s = hassas.tara(metin)
+                    self.assertEqual(s["kategori"], kategori)
+                    self.assertEqual(s["onem"], "yuksek" if kategori in hassas.YUKSEK else "dusuk")
+
+    def test_negatifler_yanlis_pozitif_yok(self):
+        for metin in self.NEGATIF:
+            with self.subTest(metin=metin[:40]):
+                self.assertEqual(hassas.tara(metin)["kategori"], "yok")
+
+    def test_dusuk_onem_onay_istemez_yuksek_ister(self):
+        self.assertFalse(hassas.onay_gerekli_mi(hassas.tara("ara beni 0532 123 45 67")))
+        self.assertFalse(hassas.onay_gerekli_mi(hassas.tara("x " + "aB3dE5fG7hJ9kL1mN3pQ5rS7tV9wX1yZ3bC5")))
+        self.assertTrue(hassas.onay_gerekli_mi(hassas.tara("AKIA" + "IOSFODNN7EXAMPLE ve 0532 123 45 67")))
+        self.assertTrue(hassas.hassas_var_mi("ali@ornek.com"))
+        self.assertFalse(hassas.hassas_var_mi("Merhaba"))
+
+    def test_aciklamalar_ayri(self):
+        self.assertIn("telefon", hassas.uyari_metni({"kategori": "kisisel"}))
+        self.assertIn("e-posta", hassas.uyari_metni({"kategori": "kisisel"}))
+        self.assertIn("rastgele", hassas.uyari_metni({"kategori": "olasi_anahtar"}))
+
+    def test_entropi(self):
+        self.assertEqual(hassas.shannon_entropisi(""), 0.0)
+        self.assertEqual(hassas.shannon_entropisi("aaaa"), 0.0)
+        self.assertAlmostEqual(hassas.shannon_entropisi("abcd"), 2.0)
+
+
+class MaskeleTesti(unittest.TestCase):
+    def test_ham_sir_kalmaz_etiket_konur(self):
+        sirlar = {
+            "sk-" + "abcdefghijklmnop1234": "api_anahtari",
+            "AKIA" + "IOSFODNN7EXAMPLE": "api_anahtari",
+            GECERLI_IBAN: "finansal",
+            GECERLI_KART: "finansal",
+            GECERLI_TC: "kimlik",
+            "aB3dE5fG7hJ9kL1mN3pQ5rS7tV9wX1yZ3bC5": "olasi_anahtar",
+        }
+        for sir, kategori in sirlar.items():
+            with self.subTest(sir=sir[:12]):
+                m = hassas.maskele(f"önce {sir} sonra")
+                self.assertEqual(m, f"önce [GİZLİ:{kategori}] sonra")
+                self.assertNotIn(sir, m)
+
+    def test_yalniz_deger_maskelenir(self):
+        self.assertEqual(hassas.maskele("şifre: Gizli123 ile gir"), "şifre: [GİZLİ:parola] ile gir")
+        self.assertEqual(hassas.maskele("postgres://" + "admin:S3cretPw@db:5432/app"),
+                         "postgres://admin:[GİZLİ:parola]@db:5432/app")
+        self.assertEqual(hassas.maskele("Authorization: Bearer " + "abcDEF123456ghiJKL789"),
+                         "Authorization: Bearer [GİZLİ:api_anahtari]")
+        self.assertEqual(hassas.maskele("ali@ornek.com:Gizli123!"), "ali@ornek.com:[GİZLİ:parola]")
+
+    def test_ozel_anahtar_blogu_tamamen(self):
+        blok = "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA\nabc\n-----END RSA PRIVATE KEY-----"
+        m = hassas.maskele(f"anahtar:\n{blok}\nbitti")
+        self.assertEqual(m, "anahtar:\n[GİZLİ:api_anahtari]\nbitti")
+        self.assertNotIn("MIIE", hassas.maskele("-----BEGIN PRIVATE KEY-----\nMIIEvQ sonu yok"))
+
+    def test_kisisel_ve_sirsiz_metin_degismez(self):
+        for metin in ("Merhaba dünya", "ara: 0532 123 45 67, ali@ornek.com", "", "https://ornek.com/a?b=1"):
+            self.assertEqual(hassas.maskele(metin), metin)
+        self.assertEqual(hassas.maskele(None), "")
+
+    def test_birden_cok_sir(self):
+        m = hassas.maskele(f"{GECERLI_TC} ve sk-{'a' * 20} ve parola: x1y2z3")
+        self.assertEqual(m, "[GİZLİ:kimlik] ve [GİZLİ:api_anahtari] ve parola: [GİZLİ:parola]")
 
 
 if __name__ == "__main__":

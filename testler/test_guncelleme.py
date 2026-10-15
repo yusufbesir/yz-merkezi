@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 KOK = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -18,6 +19,8 @@ import _ortam  # noqa: E402,F401  (gerçek ayar dosyalarını korur; sunucu mod�
 import guncelleme as gn  # noqa: E402
 import guvenlik  # noqa: E402
 import surum  # noqa: E402
+
+GERCEK_COP = gn.cop_kutusuna_tasi  # Taban testlerde bunu sahte çöp klasörüyle değiştirir
 
 SAGLAM = {
     "masaustu_sunucu.py": "import surum\nDEGER = 1\n",
@@ -46,6 +49,21 @@ class Taban(unittest.TestCase):
         self._eski_log = os.environ.get("YZ_GUNCELLEME_LOG")
         os.environ["YZ_GUNCELLEME_LOG"] = str(self.gecici / "veri" / "guncelleme.log")
         self.baglantilar = []
+        # Gerçek geri dönüşüm kutusu kullanılmaz: "silinen" dosyalar geçici bir çöp klasörüne taşınır.
+        self.cop = self.gecici / "cop"
+        self.cop_cagrilari = []
+        yama = mock.patch.object(gn, "cop_kutusuna_tasi", side_effect=self._sahte_cop)
+        self.cop_mock = yama.start()
+        self.addCleanup(yama.stop)
+
+    def _sahte_cop(self, yol):
+        yol = Path(yol)
+        if not yol.is_file() or gn.reparse_mi(yol):
+            return False
+        self.cop.mkdir(exist_ok=True)
+        self.cop_cagrilari.append(str(yol))
+        shutil.move(str(yol), str(self.cop / f"{len(self.cop_cagrilari)}-{yol.name}"))
+        return True
 
     def tearDown(self):
         for b in self.baglantilar:  # bağlantının kendisini kaldır, hedefine dokunma
@@ -108,8 +126,10 @@ class BasariliGuncellemeTesti(Taban):
         kok_veri = self.kok / "ayarlar.json"
         kok_veri.write_text("{}", "utf-8")
 
-        sonuc = self.kur("1.1.0")
-        self.assertEqual(self.isaretci(), {"surum": "1.1.0", "yol": "surumler/1.1.0"})
+        self.kur("1.1.0")
+        self.assertTrue((eski / "masaustu_sunucu.py").exists())  # bir önceki sürüm saklanır
+        sonuc = self.kur("1.2.0")
+        self.assertEqual(self.isaretci(), {"surum": "1.2.0", "yol": "surumler/1.2.0"})
         for yol in SAGLAM:
             self.assertFalse((eski / yol).exists(), yol)
         self.assertFalse((eski / "manifest.json").exists())
@@ -126,16 +146,20 @@ class BasariliGuncellemeTesti(Taban):
     def test_tamamen_temizlenen_eski_surum_klasoru_kalkar(self):
         self.kur("1.0.0")
         self.kur("1.1.0")
+        self.kur("1.2.0")
         self.assertFalse((self.kok / "surumler" / "1.0.0").exists())
-        self.assertEqual(sorted(p.name for p in (self.kok / "surumler").iterdir()), ["1.1.0"])
+        self.assertEqual(sorted(p.name for p in (self.kok / "surumler").iterdir()), ["1.1.0", "1.2.0"])
+        self.assertTrue(self.cop_cagrilari)  # silme geri dönüşüm kutusu yolundan geçti
 
     def test_gunluk_yazilir(self):
         self.kur("1.0.0")
         self.kur("1.1.0")
+        self.kur("1.2.0")
         metin = gn.gunluk_dosyasi().read_text("utf-8")
         self.assertEqual(gn.gunluk_dosyasi(), self.gecici / "veri" / "guncelleme.log")
-        for parca in ("GÜNCELLEME BAŞLADI", "Doğrulandı: 1.1.0", "Duman testi geçti", "İşaretçi güncellendi",
-                      "SİLİNDİ (manifest)", "GÜNCELLEME TAMAMLANDI: 1.1.0"):
+        for parca in ("GÜNCELLEME BAŞLADI", "Doğrulandı: 1.2.0", "Duman testi geçti", "İşaretçi güncellendi",
+                      "SİLİNDİ (manifest) geri dönüşüm kutusuna", "Önceki sürüm geri alma için saklandı",
+                      "GÜNCELLEME TAMAMLANDI: 1.2.0"):
             self.assertIn(parca, metin)
         self.assertLessEqual(len(gn.gunluk_son(20)), 20)
 
@@ -225,6 +249,130 @@ class BasarisizGuncellemeTesti(Taban):
         self.assertTrue(any("eksik" in s for s in gn.kaynak_dogrula(k)["sorunlar"]))
 
 
+class SilmeGuvenligiTesti(Taban):
+    """(a) sha256 karşılaştırmalı silme ve geri dönüşüm kutusu."""
+
+    def test_degistirilmis_dosya_silinmez_gunluge_yazilir(self):
+        self.kur("1.0.0")
+        eski = self.kok / "surumler" / "1.0.0"
+        (eski / "baslat.bat").write_text("@echo off\nrem kullanıcı düzenledi\n", "utf-8")
+        self.kur("1.1.0")
+        sonuc = self.kur("1.2.0")
+        self.assertEqual((eski / "baslat.bat").read_text("utf-8"), "@echo off\nrem kullanıcı düzenledi\n")
+        self.assertFalse((eski / "masaustu_sunucu.py").exists())  # değişmeyenler temizlendi
+        self.assertTrue((eski / "manifest.json").exists())          # tamamı silinmedi: manifest kalır
+        self.assertTrue(any(a["yol"].endswith("baslat.bat") and "sha256" in a["neden"] for a in sonuc["atlanan"]))
+        self.assertIn("sha256 manifestle uyuşmuyor", gn.gunluk_dosyasi().read_text("utf-8"))
+        self.assertFalse(any(c.endswith("baslat.bat") for c in self.cop_cagrilari))
+
+    def test_cop_kutusu_basarisizsa_kalici_silinmez(self):
+        self.kur("1.0.0")
+        self.kur("1.1.0")
+        eski = self.kok / "surumler" / "1.0.0"
+        oncesi = self.agac(eski)
+        self.cop_mock.side_effect = lambda yol: False
+        with mock.patch.object(gn.os, "unlink", side_effect=AssertionError("kalıcı silme denendi")), \
+                mock.patch.object(gn.os, "remove", side_effect=AssertionError("kalıcı silme denendi")):
+            sonuc = self.kur("1.2.0")
+        self.assertEqual(self.agac(eski), oncesi)  # hiçbir dosya kaybolmadı
+        self.assertEqual(sonuc["silinen"], [])
+        self.assertTrue(all("kalıcı silinmedi" in a["neden"] for a in sonuc["atlanan"]))
+        self.assertIn("geri dönüşüm kutusuna taşınamadı", gn.gunluk_dosyasi().read_text("utf-8"))
+
+    def test_cop_kutusu_istisnasi_kalici_silmeye_dusmez(self):
+        self.kur("1.0.0")
+        self.kur("1.1.0")
+        self.cop_mock.side_effect = OSError("kutu yok")
+        sonuc = self.kur("1.2.0")
+        self.assertTrue((self.kok / "surumler" / "1.0.0" / "masaustu_sunucu.py").exists())
+        self.assertEqual(sonuc["silinen"], [])
+
+    def test_gercek_cop_fonksiyonu_olmayan_dosyada_false(self):
+        self.assertIs(gn.cop_kutusuna_tasi, self.cop_mock)  # testlerde gerçek çöp kutusu çağrılmaz
+        self.assertFalse(GERCEK_COP(self.gecici / "olmayan.txt"))
+        klasor = self.gecici / "bir-klasor"
+        klasor.mkdir()
+        self.assertFalse(GERCEK_COP(klasor))  # klasörler taşınmaz
+        self.assertTrue(klasor.exists())
+
+
+class SurumKurallariTesti(Taban):
+    """(d) aynı sürüm farklı içerik, (e) bir önceki sürümü sakla ve --geri-al."""
+
+    def test_ayni_surum_farkli_icerik_reddedilir(self):
+        self.kur("1.0.0")
+        isaret = (self.kok / "guncel.json").read_bytes()
+        kurulu = self.agac(self.kok / "surumler" / "1.0.0")
+        farkli = dict(SAGLAM, **{"motorlar/taban.py": "X = 'başka içerik'\n"})
+        with self.assertRaises(gn.GuncellemeHatasi) as bag:
+            self.kur("1.0.0", dosyalar=farkli, ad="kaynak-1.0.0-farkli")
+        self.assertEqual(str(bag.exception), "Aynı sürüm numarası farklı içerikle zaten kurulu; önce SURUM'u artırın")
+        self.assertEqual((self.kok / "guncel.json").read_bytes(), isaret)
+        self.assertEqual(self.agac(self.kok / "surumler" / "1.0.0"), kurulu)
+        self.assertEqual((self.kok / "surumler" / "1.0.0" / "motorlar" / "taban.py").read_text("utf-8"), "X = '1.0.0'\n")
+
+    def test_ayni_surum_ayni_icerik_kabul(self):
+        self.kur("1.0.0")
+        sonuc = gn.guncelle(self.kok, self.kaynak("1.0.0", ad="kaynak-1.0.0-ikinci"))
+        self.assertFalse(sonuc["kopyalandi"])
+
+    def test_bir_onceki_surum_saklanir_semver_sirasi(self):
+        for s in ("1.2.0", "1.10.0"):  # semver: 1.10.0 > 1.2.0 (metin sırası tersini söylerdi)
+            self.kur(s)
+        self.kur("1.11.0")
+        adlar = sorted(p.name for p in (self.kok / "surumler").iterdir())
+        self.assertEqual(adlar, ["1.10.0", "1.11.0"])
+        self.assertEqual(gn.onceki_surum(self.kok), "1.10.0")
+
+    def test_geri_al_onceki_surume_doner(self):
+        self.kur("1.0.0")
+        self.kur("1.1.0")
+        sonuc = gn.geri_al(self.kok)
+        self.assertEqual(sonuc["surum"], "1.0.0")
+        self.assertEqual(self.isaretci(), {"surum": "1.0.0", "yol": "surumler/1.0.0"})
+        self.assertTrue((self.kok / "surumler" / "1.1.0" / "masaustu_sunucu.py").exists())  # yeni sürüm silinmez
+        self.assertEqual(gn.etkin_klasor(self.kok), self.kok / "surumler" / "1.0.0")
+        self.assertIn("GERİ ALMA TAMAMLANDI: 1.1.0 -> 1.0.0", gn.gunluk_dosyasi().read_text("utf-8"))
+        # geri alındıktan sonra temizlik daha yeni sürümü de (saklanan tek sürüm olarak) bırakır
+        gn.eski_surumleri_temizle(self.kok)
+        self.assertTrue((self.kok / "surumler" / "1.1.0" / "manifest.json").exists())
+
+    def test_geri_al_onceki_yoksa_hata(self):
+        self.kur("1.0.0")
+        with self.assertRaises(gn.GuncellemeHatasi):
+            gn.geri_al(self.kok)
+        self.assertEqual(self.isaretci()["surum"], "1.0.0")
+
+    def test_geri_al_bozuk_onceki_surum_reddedilir(self):
+        self.kur("1.0.0")
+        self.kur("1.1.0")
+        (self.kok / "surumler" / "1.0.0" / "motorlar" / "taban.py").write_text("bozuldu", "utf-8")
+        with self.assertRaises(gn.GuncellemeHatasi) as bag:
+            gn.geri_al(self.kok)
+        self.assertIn("doğrulanamadı", str(bag.exception))
+        self.assertEqual(self.isaretci()["surum"], "1.1.0")
+
+    def test_geri_al_duman_testi_basarisizsa_isaretci_degismez(self):
+        self.kur("1.0.0")
+        self.kur("1.1.0")
+        with mock.patch.object(gn, "duman_testi", return_value=(False, "duman testi başarısız: x")):
+            with self.assertRaises(gn.GuncellemeHatasi):
+                gn.geri_al(self.kok)
+        self.assertEqual(self.isaretci()["surum"], "1.1.0")
+
+    def test_komut_satiri_geri_al(self):
+        with mock.patch.object(gn, "KOK", self.kok):
+            self.kur("1.0.0")
+            self.kur("1.1.0")
+            import contextlib
+            import io
+            with contextlib.redirect_stdout(io.StringIO()) as cikti:
+                self.assertEqual(gn.main(["--geri-al"]), 0)
+                self.assertEqual(self.isaretci()["surum"], "1.0.0")
+                self.assertEqual(gn.main(["--geri-al"]), 1)  # 1.0.0'dan önce sürüm yok
+            self.assertIn("Geri alma yapılmadı", cikti.getvalue())
+
+
 class BaglantiVeYolTesti(Taban):
     def test_junction_izlenmez_dis_hedef_silinmez(self):
         self.kur("1.0.0")
@@ -237,7 +385,8 @@ class BaglantiVeYolTesti(Taban):
         junction_olustur(dis, eski / "motorlar")
         self.baglantilar.append(eski / "motorlar")
         self.assertTrue(gn.reparse_mi(eski / "motorlar"))
-        sonuc = self.kur("1.1.0")
+        self.kur("1.1.0")
+        sonuc = self.kur("1.2.0")
         self.assertEqual((dis / "taban.py").read_text("utf-8"), "DEĞERLİ")
         self.assertEqual((dis / "__init__.py").read_text("utf-8"), "DEĞERLİ")
         self.assertTrue(any("bağlantı" in a["neden"] and a["yol"].endswith("motorlar") for a in sonuc["atlanan"]))
@@ -264,7 +413,8 @@ class BaglantiVeYolTesti(Taban):
         except (OSError, NotImplementedError) as h:
             self.skipTest(f"symlink izni yok: {h}")
         self.baglantilar.append(eski / "baslat.bat")
-        sonuc = self.kur("1.1.0")
+        self.kur("1.1.0")
+        sonuc = self.kur("1.2.0")
         self.assertEqual(dis.read_text("utf-8"), "DEĞERLİ")
         self.assertTrue(any(a["yol"].endswith("baslat.bat") for a in sonuc["atlanan"]))
 
@@ -325,7 +475,8 @@ class GelistirmeKurulumuTesti(Taban):
         gn.manifest_yaz(self.kok, gn.manifest_uret(self.kok, "1.1.0"))
         kok_oncesi = {p: (self.kok / p).read_bytes() for p in list(SAGLAM) + ["manifest.json", ".git/HEAD"]}
         gn.guncelle(self.kok, self.kok)
-        gn.eski_surumleri_temizle(self.kok, korunan="1.1.0")
+        self.assertTrue((self.kok / "surumler" / "1.0.0").exists())  # bir önceki sürüm saklandı
+        gn.eski_surumleri_temizle(self.kok, korunan="1.1.0", sakla=0)
         for p, icerik in kok_oncesi.items():
             self.assertEqual((self.kok / p).read_bytes(), icerik, p)
         self.assertFalse((self.kok / "surumler" / "1.0.0").exists())

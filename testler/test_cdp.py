@@ -410,12 +410,12 @@ class TarayiciBaslatmaTesti(unittest.TestCase):
         with mock.patch.object(tarayici, "_edge_yolu", return_value=r"C:\edge\msedge.exe"), \
                 mock.patch.object(tarayici.cdp, "boruyla_baslat",
                                   self.baslatici(lambda i, s: [{"id": i["id"], "result": {"product": "Edg"}}], komutlar)):
-            self.assertIsNone(tarayici.baslat("http://127.0.0.1:8766/#t=x"))
+            self.assertIsNone(tarayici.baslat("http://127.0.0.1:8766/ac/AcilisKodu_0123456789abcdef"))
             self.assertTrue(tarayici.calisiyor_mu())
         komut = komutlar[0]
         self.assertEqual(komut[0], r"C:\edge\msedge.exe")
         self.assertIn(f"--user-data-dir={tarayici.PROFIL}", komut)
-        self.assertEqual(komut[-1], "--app=http://127.0.0.1:8766/#t=x")
+        self.assertEqual(komut[-1], "--app=http://127.0.0.1:8766/ac/AcilisKodu_0123456789abcdef")
         self.assertFalse(any(("remote-debugging-" + "port") in a or ("remote-allow-" + "origins") in a for a in komut))
         self.assertEqual(self.sahte.gelenler[0]["method"], "Browser.getVersion")
 
@@ -448,11 +448,33 @@ class TarayiciBaslatmaTesti(unittest.TestCase):
                 mock.patch.object(tarayici, "_edge_yolu", return_value=r"C:\edge\msedge.exe"), \
                 mock.patch.object(tarayici.subprocess, "Popen") as popen, \
                 mock.patch.object(tarayici.cdp, "boruyla_baslat") as yeni_boru:
-            self.assertIsNone(tarayici.uygulama_penceresi_ac("http://127.0.0.1:8766/#t=x"))
+            self.assertIsNone(tarayici.uygulama_penceresi_ac("http://127.0.0.1:8766/ac/AcilisKodu_0123456789abcdef"))
         yeni_boru.assert_not_called()  # ikinci denetim bağlantısı açılmaz
         komut = popen.call_args.args[0]
-        self.assertEqual(komut, [r"C:\edge\msedge.exe", "--app=http://127.0.0.1:8766/#t=x",
+        self.assertEqual(komut, [r"C:\edge\msedge.exe", "--app=http://127.0.0.1:8766/ac/AcilisKodu_0123456789abcdef",
                                  f"--user-data-dir={tarayici.PROFIL}"])
+
+    def test_belirtecli_adres_uygulama_kipinde_reddedilir(self):
+        # Komut satırı Win32_Process ile her yerel süreçten okunabilir: #t= / ?t= biçimli adres hiç başlatılmaz.
+        with mock.patch.object(tarayici, "_edge_yolu", return_value=r"C:\edge\msedge.exe"), \
+                mock.patch.object(tarayici.subprocess, "Popen") as popen, \
+                mock.patch.object(tarayici.cdp, "boruyla_baslat") as boru:
+            for adres in ("http://127.0.0.1:8766/#t=gizli", "http://127.0.0.1:8766/?t=gizli", "http://127.0.0.1:1/x#a&t=1"):
+                with self.subTest(adres=adres):
+                    with self.assertRaises(tarayici.TarayiciHatasi):
+                        tarayici.baslat(adres)
+                    self.assertIn("belirteci", tarayici.uygulama_penceresi_ac(adres))
+        popen.assert_not_called()
+        boru.assert_not_called()
+
+    def test_komut_listesinde_belirtec_yok(self):
+        import masaustu_sunucu as ms
+        adres = ms.acilis_adresi(8766)
+        for komut in (tarayici.edge_komutu(r"C:\edge\msedge.exe", adres), tarayici.devret_komutu(r"C:\edge\msedge.exe", adres)):
+            birlesik = " ".join(komut)
+            self.assertNotIn(ms.BELIRTEC, birlesik)
+            self.assertNotIn("t=", birlesik)
+            self.assertIn("/ac/", birlesik)
 
     def test_kapat_browser_close_gonderir(self):
         s = SahteTarayici(lambda i, s: [{"id": i["id"], "result": {}}])

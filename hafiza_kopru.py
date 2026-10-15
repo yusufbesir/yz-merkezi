@@ -7,6 +7,11 @@ OKUMA: kasadaki `araclar/hafiza.py` aracının `context` komutu yerel bir alt s�
 zaman aşımında boş bağlam döner ve Türkçe sebep `durum()` içinde görünür; mesaj yine de gider.
 Dönen metindeki sır benzeri satırlar (API anahtarı, parola, şifre ...) atılır.
 
+BÜTÜNLÜK (ilk görüşte güven): `araclar/hafiza.py` ilk kez başarıyla çalıştırıldığında sha256 özeti
+`%LOCALAPPDATA%\\YZMerkezi\\hafiza-py.sha256` dosyasına yazılır (yol `YZ_HAFIZA_HASH` ile değişir). Sonraki her
+çalıştırmadan önce özet yeniden hesaplanır; değişmişse araç ÇALIŞTIRILMAZ, bağlam boş döner ve `durum()` uyarı
+taşır. Kullanıcı yeni sürümü Ayarlar → Hafıza'dan onaylayınca (`hash_onayla()`) yeni özet kabul edilir.
+
 YAZMA: Hafıza OS'a (katalog, Mem0, aday kuyruğu) doğrudan yazılmaz. Kasadaki `hafiza.py candidate-add`
 kuyruğu kaynak dosyada aynen bulunan, doğrulanmış kalıcı gerçekler içindir; sohbet yanıtı özetleri bu
 koşulu taşımaz. Bu yüzden kasanın ham giriş klasörüne (`gelen-kutusu/yz-merkezi/YYYY-MM-DD.md`) yalnızca
@@ -24,6 +29,8 @@ import sys
 import threading
 from datetime import datetime
 from pathlib import Path
+
+import guvenlik
 
 VARSAYILAN_KASA = r"D:\YusufII\HAFIZAM1\kasa"
 HAFIZA_ARACI = Path("araclar") / "hafiza.py"
@@ -46,6 +53,7 @@ _SIR_DUYARSIZ = re.compile(r"parola|[sş][iıİI]fre|password|passwd|api[ _-]?ke
 _KILIT = threading.Lock()      # durum alanları
 _YAZMA_KILIDI = threading.Lock()  # gelen kutusuna ekleme
 _DURUM = {"son_mod": None, "son_hata": None}
+HASH_UYARISI = "hafiza.py değişmiş; Ayarlar → Hafıza'dan yeni sürümü onayla"
 
 
 # ---------------------------------------------------------------- yardımcılar
@@ -82,12 +90,70 @@ def sirli_satirlari_at(metin):
 
 
 def durum():
-    """/api/hafiza-durum yanıtı: {kasa_var, hafiza_py_var, son_mod, son_hata, kasa}."""
+    """/api/hafiza-durum yanıtı: {kasa_var, hafiza_py_var, son_mod, son_hata, kasa, hash_degisti, hash_uyarisi}."""
     kasa = kasa_yolu()
     with _KILIT:
         son = dict(_DURUM)
+    degisti = hash_durumu()["degisti"]
     return {"kasa_var": kasa.is_dir(), "hafiza_py_var": (kasa / HAFIZA_ARACI).is_file(),
-            "son_mod": son["son_mod"], "son_hata": son["son_hata"], "kasa": str(kasa)}
+            "son_mod": son["son_mod"], "son_hata": son["son_hata"], "kasa": str(kasa),
+            "hash_degisti": degisti, "hash_uyarisi": HASH_UYARISI if degisti else None}
+
+
+# ---------------------------------------------------------------- hafiza.py bütünlüğü (ilk görüşte güven)
+
+def hash_dosyasi():
+    """Güvenilen hafiza.py özetinin saklandığı dosya (her çağrıda ortamdan okunur; testler geçici yol verir)."""
+    return guvenlik.veri_yolu("YZ_HAFIZA_HASH", "hafiza-py.sha256")
+
+
+def _arac_ozeti(kasa=None):
+    """Kasadaki hafiza.py dosyasının sha256 özeti; dosya okunamazsa None."""
+    yol = (kasa or kasa_yolu()) / HAFIZA_ARACI
+    try:
+        return hashlib.sha256(yol.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def _guvenilen_ozet():
+    try:
+        deger = hash_dosyasi().read_text("utf-8").strip().lower()
+    except OSError:
+        return None
+    return deger if re.fullmatch(r"[0-9a-f]{64}", deger) else None
+
+
+def _ozeti_yaz(ozet):
+    yol = hash_dosyasi()
+    try:
+        yol.parent.mkdir(parents=True, exist_ok=True)
+        gecici = yol.with_name(yol.name + ".tmp")
+        gecici.write_text(ozet + "\n", encoding="utf-8")
+        os.replace(gecici, yol)
+        return True
+    except OSError as h:
+        guvenlik.hata_yaz(f"hafiza.py özeti yazılamadı: {h}")
+        return False
+
+
+def hash_durumu():
+    """{"guvenilen", "guncel", "degisti"}: kayıtlı özet yoksa (ilk görüş) degisti False."""
+    guvenilen, guncel = _guvenilen_ozet(), _arac_ozeti()
+    return {"guvenilen": guvenilen, "guncel": guncel,
+            "degisti": bool(guvenilen and guncel and guvenilen != guncel)}
+
+
+def hash_onayla():
+    """Kasadaki hafiza.py'nin şimdiki özetini güvenilen özet olarak kaydeder (/api/hafiza-onayla)."""
+    ozet = _arac_ozeti()
+    if not ozet:
+        return {"tamam": False, "sebep": "Kasada araclar/hafiza.py bulunamadı."}
+    if not _ozeti_yaz(ozet):
+        return {"tamam": False, "sebep": "Özet dosyası yazılamadı."}
+    guvenlik.hata_yaz(f"hafiza.py yeni sürümü kullanıcı tarafından onaylandı (sha256 {ozet[:12]}…)")
+    _hata_yaz(None)
+    return {"tamam": True, "sha256": ozet}
 
 
 # ---------------------------------------------------------------- okuma
@@ -127,7 +193,14 @@ def baglam_getir(metin, limit=SINIR_KAYIT, butce=KARAKTER_BUTCESI, zaman_asimi=Z
     elif not (kasa / HAFIZA_ARACI).is_file():
         sonuc = _bos("Hafıza aracı bulunamadı (araclar/hafiza.py).")
     else:
-        sonuc = _calistir(kasa, sorgu, limit, butce, zaman_asimi)
+        ozet, guvenilen = _arac_ozeti(kasa), _guvenilen_ozet()
+        if guvenilen and ozet != guvenilen:
+            guvenlik.hata_yaz("hafiza.py özeti güvenilen özetle uyuşmuyor; araç çalıştırılmadı")
+            sonuc = _bos(HASH_UYARISI + ".")
+        else:
+            sonuc = _calistir(kasa, sorgu, limit, butce, zaman_asimi)
+            if not guvenilen and ozet and sonuc["sebep"] is None:  # ilk başarılı çalıştırma: bu sürüme güven
+                _ozeti_yaz(ozet)
     _durumu_yaz(sonuc["mod"], sonuc["sebep"])
     return sonuc
 
@@ -172,22 +245,34 @@ def _calistir(kasa, sorgu, limit, butce, zaman_asimi):
             "kimlikler": kimlikler, "sebep": None, "atilan": atilan}
 
 
-def baglam_ekle(metin, limit=SINIR_KAYIT, butce=KARAKTER_BUTCESI):
-    """Gönderilecek metnin başına hafıza bağlamını ekler.
-
-    Döner: (gönderilecek metin, bağlam kaydı ya da None). Bağlam boşsa metin aynen döner ve hiçbir şey eklenmez.
-    Bağlam kaydı: {"metin", "mod", "karakter", "kimlikler"} (sohbet geçmişinde ham mesajdan ayrı tutulur).
-    """
+def baglam_kaydi(metin, limit=SINIR_KAYIT, butce=KARAKTER_BUTCESI):
+    """Metnin hafıza bağlamı kaydı {"metin", "mod", "karakter", "kimlikler"}; bağlam boşsa ya da hata olursa None."""
     try:
         sonuc = baglam_getir(metin, limit=limit, butce=butce)
     except Exception as hata:  # noqa: BLE001  (hafıza sorunu mesajın gitmesini hiçbir koşulda engellemez)
         _durumu_yaz(None, f"Hafıza bağlamı alınamadı: {type(hata).__name__}")
-        return metin, None
+        return None
     if not sonuc["metin"]:
-        return metin, None
-    gonderilecek = f"{BASLIK}\n{sonuc['metin']}{AYIRAC}{metin}"
-    return gonderilecek, {"metin": sonuc["metin"], "mod": sonuc["mod"], "karakter": len(sonuc["metin"]),
-                          "kimlikler": sonuc["kimlikler"]}
+        return None
+    return {"metin": sonuc["metin"], "mod": sonuc["mod"], "karakter": len(sonuc["metin"]),
+            "kimlikler": sonuc["kimlikler"]}
+
+
+def baglami_birlestir(metin, kayit):
+    """Bağlam kaydını gönderilecek metnin başına ekler (kayıt yoksa metin aynen döner)."""
+    if not kayit or not kayit.get("metin"):
+        return metin
+    return f"{BASLIK}\n{kayit['metin']}{AYIRAC}{metin}"
+
+
+def baglam_ekle(metin, limit=SINIR_KAYIT, butce=KARAKTER_BUTCESI):
+    """Gönderilecek metnin başına hafıza bağlamını ekler (onay istenmeyen eski otomatik yol).
+
+    Döner: (gönderilecek metin, bağlam kaydı ya da None). Bağlam boşsa metin aynen döner ve hiçbir şey eklenmez.
+    Bağlam kaydı: {"metin", "mod", "karakter", "kimlikler"} (sohbet geçmişinde ham mesajdan ayrı tutulur).
+    """
+    kayit = baglam_kaydi(metin, limit=limit, butce=butce)
+    return baglami_birlestir(metin, kayit), kayit
 
 
 # ---------------------------------------------------------------- yazma (yalnızca ekleme)

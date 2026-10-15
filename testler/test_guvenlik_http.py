@@ -202,6 +202,60 @@ class MasaustuHttpTesti(OrtakSunucuTestleri, SunucuTabani):
         self.assertIn("uyari", json.loads(metin))
         self.assertEqual(self.istek("GET", "/api/durum", belirtec=False)[0], 403)
 
+    # ---- açılış kodu ve oturum çerezi (belirteç Edge komut satırına ve JS'e gitmez)
+    def ac(self, kod, basliklar=None):
+        return self.istek("GET", f"/ac/{kod}", belirtec=False, basliklar=basliklar)
+
+    def cerezli(self, yontem, yol, govde=None, basliklar=None, cerez=None):
+        b = {"Cookie": f"yz_oturum={cerez or self.belirtec}"}
+        b.update(basliklar or {})
+        return self.istek(yontem, yol, govde, basliklar=b, belirtec=False)
+
+    def test_acilis_kodu_tek_kullanimlik_ve_cerez_koyar(self):
+        kod = ms.ACILIS_KODLARI.uret()
+        durum_, y, _ = self.ac(kod)
+        self.assertEqual(durum_, 302)
+        self.assertEqual(y.getheader("Location"), "/")
+        cerez = y.getheader("Set-Cookie")
+        self.assertEqual(cerez, f"yz_oturum={ms.BELIRTEC}; HttpOnly; SameSite=Strict; Path=/")
+        self.basliklar_tamam(y)
+        durum_, y, govde = self.ac(kod)            # ikinci kullanım
+        self.assertEqual(durum_, 403)
+        self.assertIsNone(y.getheader("Set-Cookie"))
+        self.assertNotIn(ms.BELIRTEC, govde)
+        self.assertIn("açılış kodu", (self.klasor / "veri" / "hata.log").read_text("utf-8"))
+        for kotu in ("yok-boyle-bir-kod-1234567890", "", "..%2f..", ms.BELIRTEC):
+            with self.subTest(kod=kotu):
+                self.assertEqual(self.ac(kotu)[0], 403)
+
+    def test_acilis_kodu_30_sn_sonra_gecersiz(self):
+        saat = [1000.0]
+        kodlar = guvenlik.AcilisKodlari(saat=lambda: saat[0])
+        with mock.patch.object(ms, "ACILIS_KODLARI", kodlar):
+            eski, taze = kodlar.uret(), None
+            saat[0] += 29.5
+            taze = kodlar.uret()
+            self.assertEqual(self.ac(taze)[0], 302)
+            saat[0] += 1.0                           # eski kod 30,5 sn önce üretildi
+            self.assertEqual(self.ac(eski)[0], 403)
+        self.assertEqual(guvenlik.ACILIS_KODU_SURESI, 30)
+
+    def test_cerezle_api_200_cerezsiz_403(self):
+        self.assertEqual(self.cerezli("GET", "/api/durum")[0], 200)
+        self.assertEqual(self.cerezli("POST", "/api/ayar", {"tema": "koyu"})[0], 200)
+        self.assertEqual(self.istek("GET", "/api/durum", belirtec=False)[0], 403)
+        self.assertEqual(self.cerezli("GET", "/api/durum", cerez="yanlis")[0], 403)
+        self.assertEqual(self.cerezli("GET", "/api/durum", basliklar={"Cookie": "baska=1"})[0], 403)
+
+    def test_cerezle_sec_fetch_site_denetimi(self):
+        for site, beklenen in (("same-origin", 200), ("cross-site", 403), ("same-site", 403), ("none", 403)):
+            with self.subTest(site=site):
+                self.assertEqual(self.cerezli("GET", "/api/durum", basliklar={"Sec-Fetch-Site": site})[0], beklenen)
+                self.assertEqual(self.cerezli("POST", "/api/ayar", {"tema": "koyu"},
+                                              basliklar={"Sec-Fetch-Site": site})[0], beklenen)
+        # çerez + yabancı Origin: Host/Origin denetimi yine geçerli
+        self.assertEqual(self.cerezli("GET", "/api/durum", basliklar={"Origin": "https://evil.com"})[0], 403)
+
     # ---- hata metinleri
     def test_beklenmeyen_hata_ayrintisiz_ve_gunluklu(self):
         with mock.patch.object(ms, "ayarlari_yaz", side_effect=RuntimeError("gizli-ayrinti dict")):
@@ -407,7 +461,15 @@ class PortGaspiTesti(unittest.TestCase):
         guvenlik.belirtec_yaz(ms.BELIRTEC)
         with mock.patch.object(ms.tarayici, "uygulama_penceresi_ac", return_value=None) as ac:
             self.assertTrue(ms.mevcut_ornegi_ac(s.server_port))
-        ac.assert_called_once_with(f"http://127.0.0.1:{s.server_port}/#t={ms.BELIRTEC}")
+        self.acilis_adresi_dogru(ac, s.server_port)
+
+    def acilis_adresi_dogru(self, ac, port):
+        """Pencere tek kullanımlık açılış koduyla açılır; adreste (ve komut satırında) belirteç yoktur."""
+        ac.assert_called_once()
+        adres = ac.call_args.args[0]
+        self.assertRegex(adres, rf"^http://127\.0\.0\.1:{port}/ac/[A-Za-z0-9_-]{{16,64}}$")
+        self.assertNotIn(ms.BELIRTEC, adres)
+        self.assertNotIn("t=", adres)
 
     def test_yanlis_belirtecle_pencere_acilmaz(self):
         s = self.sunucu(ms.Isleyici)
@@ -458,7 +520,7 @@ class PortGaspiTesti(unittest.TestCase):
                 mock.patch.object(ms.tarayici, "uygulama_penceresi_ac", return_value=None) as ac, \
                 mock.patch.object(ms.tarayici, "baslat") as baslat:
             ms.main()
-        ac.assert_called_once_with(f"http://127.0.0.1:{s.server_port}/#t={ms.BELIRTEC}")
+        self.acilis_adresi_dogru(ac, s.server_port)
         baslat.assert_not_called()
 
     def test_sunucu_sinifi_ayni_porta_ikinci_baglanmayi_reddeder(self):
@@ -473,6 +535,40 @@ class ApiSurumuHttpTesti(OrtakSunucuTestleri, SunucuTabani):
     belirtec = sunucu.BELIRTEC
     korumali_get = "/api/saglayicilar"
     korumali_post = ("/api/saglayici-sil", {"id": "yok"})
+
+    # API sürümü de belirteci tarayıcı komut satırına (webbrowser.open) koymaz: açılış kodu + HttpOnly çerez.
+    def test_acilis_kodu_ve_cerez(self):
+        kod = sunucu.ACILIS_KODLARI.uret()
+        durum_, y, _ = self.istek("GET", f"/ac/{kod}", belirtec=False)
+        self.assertEqual(durum_, 302)
+        self.assertEqual(y.getheader("Location"), "/")
+        self.assertEqual(y.getheader("Set-Cookie"), f"yz_oturum={sunucu.BELIRTEC}; HttpOnly; SameSite=Strict; Path=/")
+        self.assertEqual(self.istek("GET", f"/ac/{kod}", belirtec=False)[0], 403)   # tek kullanımlık
+        b = {"Cookie": f"yz_oturum={self.belirtec}"}
+        self.assertEqual(self.istek("GET", self.korumali_get, belirtec=False, basliklar=b)[0], 200)
+        self.assertEqual(self.istek("GET", self.korumali_get, belirtec=False)[0], 403)
+        self.assertEqual(self.istek("GET", self.korumali_get, belirtec=False,
+                                    basliklar={**b, "Sec-Fetch-Site": "cross-site"})[0], 403)
+        self.assertEqual(self.istek("GET", self.korumali_get, belirtec=False,
+                                    basliklar={**b, "Sec-Fetch-Site": "same-origin"})[0], 200)
+        self.assertEqual(self.istek("GET", self.korumali_get, belirtec=False,
+                                    basliklar={"Cookie": "yz_oturum=yanlis"})[0], 403)
+
+    def test_tarayiciya_belirtec_gitmez(self):
+        acilan = []
+        with mock.patch.object(sunucu, "Sunucu", side_effect=OSError("port")), \
+                redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
+            sunucu.main()  # port kullanımda: tarayıcı açılmadan çıkar
+        with mock.patch.object(sunucu, "Sunucu") as sahte, \
+                mock.patch.object(sunucu.webbrowser, "open", side_effect=acilan.append), \
+                mock.patch.object(sunucu, "duz_anahtarlari_sifrele", return_value=0), \
+                mock.patch.object(sunucu, "yerelleri_tara"), \
+                mock.patch.object(sunucu.sys, "argv", ["sunucu.py"]), redirect_stdout(io.StringIO()):
+            sahte.return_value.serve_forever.side_effect = KeyboardInterrupt
+            sunucu.main()
+        self.assertEqual(len(acilan), 1)
+        self.assertRegex(acilan[0], r"^http://127\.0\.0\.1:\d+/ac/[A-Za-z0-9_-]{16,64}$")
+        self.assertNotIn(sunucu.BELIRTEC, acilan[0])
 
     def test_beklenmeyen_hata_ayrintisiz(self):
         with mock.patch.object(sunucu, "ayarlari_yaz", side_effect=RuntimeError("gizli-ayrinti")):
@@ -491,6 +587,28 @@ class ApiSurumuHttpTesti(OrtakSunucuTestleri, SunucuTabani):
         kayitli = json.loads(self.ayar.read_text("utf-8"))["anahtarlar"]["openai"]
         self.assertTrue(kayitli.startswith("dpapi:"))  # anahtar diskte şifreli
         self.assertEqual(guvenlik.dpapi_coz(kayitli), "x")
+
+
+class AcilisKodlariTesti(unittest.TestCase):
+    def test_tek_kullanim_ve_sure(self):
+        saat = [0.0]
+        k = guvenlik.AcilisKodlari(sure=30, saat=lambda: saat[0])
+        a, b = k.uret(), k.uret()
+        self.assertNotEqual(a, b)
+        self.assertTrue(k.tuket(a))
+        self.assertFalse(k.tuket(a))
+        saat[0] = 30.0
+        self.assertFalse(k.tuket(b), "30. saniyede süresi dolmuş sayılır")
+        for kotu in (None, 123, "", "kisa", "x" * 65, "geçersiz-karakter!!!!!!!!!!"):
+            self.assertFalse(k.tuket(kotu))
+
+    def test_cerez_ayristirma(self):
+        self.assertEqual(guvenlik.cerezden_belirtec("a=1; yz_oturum=abc_DEF-1; b=2"), "abc_DEF-1")
+        for bas in ("", None, "a=1", "yz_oturum", "\x00;;=="):
+            self.assertEqual(guvenlik.cerezden_belirtec(bas), "")
+        c = guvenlik.oturum_cerezi("deger")
+        for parca in ("yz_oturum=deger", "HttpOnly", "SameSite=Strict", "Path=/"):
+            self.assertIn(parca, c)
 
 
 class YardimciTesti(unittest.TestCase):
@@ -546,19 +664,19 @@ class ArayuzDosyalariTesti(unittest.TestCase):
                 self.assertNotRegex((KOK / klasor / "stil.css").read_text("utf-8"), r"@import|url\(\s*['\"]?https?:")
 
     def test_arayuz_belirtec_akisi(self):
-        for klasor in ("arayuz", "arayuz-masaustu"):
-            js = (KOK / klasor / "uygulama.js").read_text("utf-8")
-            with self.subTest(klasor=klasor):
-                self.assertIn("X-YZ-Token", js)
-                self.assertIn("location.hash", js)
-                self.assertIn("sessionStorage", js)
-                self.assertIn("history.replaceState", js)
-        # /api/ isteği yapan her fetch çağrısı başlığı taşımalı
-        for klasor in ("arayuz", "arayuz-masaustu"):
+        # İki sürümde de belirteç JS'e hiç gelmez; istekler yalnızca HttpOnly çerezle (aynı köken) gider.
+        for klasor, adlar in (("arayuz", ("uygulama.js",)),
+                              ("arayuz-masaustu", ("uygulama.js", "gelismis.js", "markdown.js"))):
+            for ad in adlar:
+                js = (KOK / klasor / ad).read_text("utf-8")
+                with self.subTest(dosya=f"{klasor}/{ad}"):
+                    for yasak in ("X-YZ-Token", "location.hash", "sessionStorage", "localStorage.setItem(\"yzm.belirtec",
+                                  "document.cookie"):
+                        self.assertNotIn(yasak, js)
             js = (KOK / klasor / "uygulama.js").read_text("utf-8")
             for m in re.finditer(r"fetch\(", js):
                 parca = js[m.start():m.start() + 300]
-                self.assertTrue("X-YZ-Token" in parca or "secenek" in parca or "basliklar" in parca, parca)
+                self.assertTrue("same-origin" in parca or "secenek" in parca, parca)
 
     def test_masaustu_tek_asistan_arayuzu(self):
         js = (KOK / "arayuz-masaustu" / "uygulama.js").read_text("utf-8")

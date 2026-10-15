@@ -204,6 +204,12 @@ kbd { font-family: var(--sans); font-size: 12px; background: var(--yuzey-2); bor
 .hassas-satir button { font-size: 12px; padding: 2px 10px; border: 1px solid var(--hata); color: var(--hata); }
 .hassas-satir button:hover { background: rgba(192, 57, 43, .18); }
 .hassas-satir button:first-of-type { margin-left: auto; }
+.baglam-onay { flex-direction: column; align-items: stretch; background: var(--yuzey); border-color: var(--kenar); }
+.baglam-onay .baglam summary { cursor: pointer; }
+.baglam-onay .baglam pre { margin: 6px 0 0; max-height: 220px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.5 var(--sans); }
+.baglam-dugmeler { display: flex; gap: 6px; justify-content: flex-end; }
+.baglam-onay .baglam-dugmeler button:first-of-type { margin-left: 0; }
+#cokluDurum .baglam pre { max-height: 200px; overflow: auto; white-space: pre-wrap; }
 
 /* ---------------- açılır menüler ve motor notu */
 .acilir-menu {
