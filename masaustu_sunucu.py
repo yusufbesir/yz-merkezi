@@ -33,6 +33,7 @@ from pathlib import Path, PureWindowsPath
 from urllib.parse import parse_qs, urlparse
 
 import cdp
+import guncelleme
 import guvenlik
 import hassas
 import hafiza_kopru
@@ -1668,6 +1669,8 @@ class Isleyici(guvenlik.GuvenlikKarisimi, BaseHTTPRequestHandler):
         try:
             if yol == "/api/kimlik":  # belirteçsiz: port meşgulse çalışan örneğin bizim uygulamamız olduğunu doğrulamak için
                 return self._json(guvenlik.KIMLIK)
+            if yol == "/api/guncelleme-durum":  # geçerli sürüm, guncel.json, günlüğün son 20 satırı
+                return self._json(guncelleme.durum(KOK))
             if yol == "/api/hafiza-durum":
                 return self._json(hafiza_kopru.durum())
             if yol == "/api/jev-durum":  # anahtar dosyası bulundu mu, model, son çağrı (anahtar değeri yok)

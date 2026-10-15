@@ -1,4 +1,5 @@
-﻿# Masaüstünde "Yapay Zeka Merkezi.lnk" kısayolu oluşturur (hedef: pythonw.exe masaustu_sunucu.py).
+﻿# Masaüstünde "Yapay Zeka Merkezi.lnk" kısayolu oluşturur (hedef: pythonw.exe masaustu_sunucu.py;
+# guncel.json varsa pythonw.exe guncelleme.py --baslat: etkin sürüm (surumler\<surum>) başlatılır).
 # Kullanım: sağ tık > "PowerShell ile Çalıştır" ya da  powershell -ExecutionPolicy Bypass -File kisayol-olustur.ps1
 $ErrorActionPreference = 'Stop'
 $proje = $PSScriptRoot
@@ -11,7 +12,7 @@ $yol = Join-Path $masaustu 'Yapay Zeka Merkezi.lnk'
 $kabuk = New-Object -ComObject WScript.Shell
 $kisayol = $kabuk.CreateShortcut($yol)
 $kisayol.TargetPath = $komut.Source
-$kisayol.Arguments = 'masaustu_sunucu.py'
+if (Test-Path (Join-Path $proje 'guncel.json')) { $kisayol.Arguments = 'guncelleme.py --baslat' } else { $kisayol.Arguments = 'masaustu_sunucu.py' }
 $kisayol.WorkingDirectory = $proje
 $kisayol.IconLocation = "$simge,0"
 $kisayol.Description = 'Yapay Zeka Merkezi'

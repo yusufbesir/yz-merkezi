@@ -360,6 +360,35 @@ gerçek JSONL/stream-json biçimini basar. Senaryo, istemdeki anahtar sözcükle
 Gerçek CLI'larda yalnızca `--version` ve giriş durumu denetlenir. İstem göndermek ücret ve kota harcadığı için
 kullanıcı onayı gerekir.
 
+## Güncelleme ve temizlik
+
+**Kural:** yeni sürüm kurulunca uygulama eski sürümden kalan dosyaları kendisi siler; kullanıcı verisine asla dokunmaz. Sürüm `surum.py` içindedir (`SURUM = "1.1.0"`, semver) ve `GET /api/kimlik` → `{"uygulama": "yz-merkezi", "surum": ...}` ile görünür; Ayarlar → Hakkında sürümü ve güncelleme durumunu gösterir.
+
+**Kurulum düzeni** (`guncelleme.py`):
+
+- `<kurulum kökü>/surumler/<sürüm>/`: her sürüm kendi klasöründe, kendi `manifest.json` dosyasıyla (`{"surum", "olusturma", "dosyalar": [{"yol", "sha256", "boyut"}]}`).
+- `<kurulum kökü>/guncel.json`: etkin sürüm işaretçisi `{"surum": "1.1.0", "yol": "surumler/1.1.0"}`. `baslat.bat` (ve `kisayol-olustur.ps1` ile kurulan kısayol) bu dosya varsa `guncelleme.py --baslat` ile oradaki sürümü, yoksa kökü çalıştırır.
+- Manifeste yalnızca uygulama dosyaları girer: kökteki `.py/.json/.bat/.ps1/.md` ile `arayuz/`, `arayuz-masaustu/`, `motorlar/`, `araclar/`. `.git`, `testler/`, `__pycache__`, `surumler/` ve veri dosyaları hariçtir. Üretmek için `python araclar\manifest_uret.py`.
+- Yerel kurulum/güncelleme: `surum.py` içinde `SURUM`'u artır, sonra `python araclar\surum_paketle.py` (kökten `surumler/<SURUM>/` içine manifestle kopyalar ve aşağıdaki güncelleme adımlarını çalıştırır). Aynı sürüm numarasıyla farklı içerik kurulmaz (doğrulama hatası). Başka bir klasördeki hazır sürüm için: `python guncelleme.py --guncelle <klasör>`.
+
+**Güncelleme sırası** (`guncelle(kurulum_koku, yeni_surum_klasoru)`):
+
+1. Yeni sürümün manifestteki dosyaları `surumler/<sürüm>/` içine kopyalanır (klasör zaten varsa kopyalama atlanır).
+2. **Doğrulama:** manifestteki her dosya var, boyut ve sha256 eşleşiyor, manifest dışı fazla dosya yok, hiçbir yerde symlink/junction yok. Sonra **duman testi:** ayrı bir süreçte `masaustu_sunucu`, `motorlar` ve `surum` içe aktarılır (önbellek yazılmaz).
+3. Biri başarısızsa yalnızca bu işlemin kopyaladığı dosyalar geri alınır; **eski sürüm ve `guncel.json` olduğu gibi kalır** (zaten var olan bir klasöre dokunulmaz).
+4. `guncel.json` atomik yazılır (geçici dosya + fsync + yerine koyma).
+5. Eski sürümler temizlenir (`eski_surumleri_temizle`).
+
+**Temizliğin sınırları:**
+
+- Yalnızca `surumler/<eski sürüm>/` altındaki ve **o klasörün kendi manifestinde** yazan dosyalar (ve onların `__pycache__` önbelleği) silinir; boş kalan klasörler kaldırılır. Manifest dışı dosyalara, manifesti olmayan ya da manifesti geçersiz sürüm klasörlerine, etkin sürüme ve kurulum kökünün kendi dosyalarına dokunulmaz.
+- Gerçek yol denetlenir: manifest yolu mutlaksa, sürücü içeriyorsa ya da `..` içeriyorsa o sürümün manifestinin **tamamı** reddedilir; gerçek yolu sürüm klasörünün dışına çıkan dosya atlanır. **Symlink ve junction (reparse point) asla izlenmez:** sürüm klasörü ya da yolun herhangi bir parçası bağlantıysa atlanır ve raporlanır.
+- Sabit korunan kalıplar her durumda silinmez (manifestte geçse bile manifest reddedilir): `ayarlar*.json`, `masaustu-ayarlar*.json`, `*.bozuk-*.json`, `*.log`, `.tarayici-profili*`, `tarayici-profili*`, `veri`, `kasa`, `belirtec`, `guncel.json`, `.git`. Veri klasörü (`%LOCALAPPDATA%\YZMerkezi`: ayarlar, sohbet geçmişi, profil, günlükler) hiçbir zaman silinmez; kasa (Hafıza OS) hiç işlenmez.
+- `.git` bulunan kök **geliştirme kurulumudur**: kökteki dosyalar hiçbir zaman silinmez, yalnızca `surumler/` düzeni işlenir. `.git` içeren bir sürüm klasörüne de dokunulmaz.
+- Silinemeyen dosya kalırsa o sürümün `manifest.json` dosyası bir sonraki temizlik için bırakılır.
+
+Her adım (kopyalama, doğrulama, duman testi, işaretçi, her silinen/atlanan dosya, geri alma) `%LOCALAPPDATA%\YZMerkezi\guncelleme.log` dosyasına yazılır (`YZ_GUNCELLEME_LOG` ile değiştirilebilir). `GET /api/guncelleme-durum` → `{surum, calisan_klasor, kurulum_koku, gelistirme_kurulumu, guncel, kurulu_surumler, gunluk}` (günlüğün son 20 satırı). Komut satırı: `python guncelleme.py --durum | --temizle | --yol`. Testler: `testler/test_guncelleme.py` (tamamı geçici klasörlerde).
+
 ## Klasör yapısı
 
 - `motorlar/`: Claude, Codex ve Gemini komut satırı araçlarını saran motor paketi (`MOTORLAR`, `motor(id)`; `hazir_mi`, `modeller`, `sor`); Tek Asistan bunları çağırır
@@ -374,6 +403,7 @@ kullanıcı onayı gerekir.
 - `yonlendirici.py` ve `yonlendirme.json`: mesajı sınıflandırıp site/model önerir; tercih sırası `yonlendirme.json` dosyasında düzenlenir
 - `jev.py`: Jev (TypeSafe karar modeli) istemcisi; hassas bilgi uyarısı, yönlendirme ve yanıt puanlamada kullanılır, kurallar yedektir (yalnızca standart kütüphane)
 - `uygulamalar.json`: tanınan masaüstü programları (ChatGPT, Gemini, Claude)
+- `surum.py`: uygulama sürümü (semver) ve `/api/kimlik` yanıtı; `guncelleme.py`: sürüm kurma, doğrulama ve eski sürüm dosyalarını manifestle temizleme; `araclar/manifest_uret.py`, `araclar/surum_paketle.py`: manifest üretme ve kökten `surumler/<SURUM>/` kurma
 - `guvenlik.py`: iki sunucunun ortak güvenlik yardımcıları (başlıklar, istek belirteci, gövde sınırı, hata günlüğü, ayar dosyası yazma/yedekleme)
 - `hafiza_kopru.py`: Hafıza OS köprüsü (kasadaki `hafiza.py context` çağrısı, sır süzgeci, gelen kutusuna aday kayıt ekleme; yalnızca standart kütüphane)
 - `sunucu.py`: API sürümünün yerel sunucusu ve sağlayıcı bağdaştırıcıları (OpenAI uyumlu, Anthropic, Gemini)

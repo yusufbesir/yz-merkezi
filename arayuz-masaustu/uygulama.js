@@ -889,6 +889,28 @@ async function jevBolumunuDoldur() {
 }
 SEKME_ACILISLARI.jev = jevBolumunuDoldur;
 
+// ---- Ayarlar → Hakkında: sürüm ve güncelleme durumu
+
+async function hakkindaBolumunuDoldur() {
+  const s = $("#hakkindaSurum"), g = $("#hakkindaGuncelleme");
+  try {
+    const d = await api("/api/guncelleme-durum");
+    s.textContent = `Sürüm: ${d.surum}`;
+    const parcalar = [];
+    if (d.guncel) parcalar.push(`Etkin kurulum: ${d.guncel.yol}`);
+    else parcalar.push(d.gelistirme_kurulumu ? "Geliştirme kurulumu (proje klasöründen çalışıyor)" : "Kurulum klasöründen çalışıyor");
+    if (d.kurulu_surumler && d.kurulu_surumler.length) parcalar.push(`Kurulu sürümler: ${d.kurulu_surumler.join(", ")}`);
+    const son = (d.gunluk || []).slice(-1)[0];
+    if (son) parcalar.push(`Son güncelleme kaydı: ${son}`);
+    g.textContent = parcalar.join(" · ");
+    g.classList.remove("hata");
+  } catch (e) {
+    g.textContent = `Güncelleme durumu okunamadı: ${e.message}`;
+    g.classList.add("hata");
+  }
+}
+SEKME_ACILISLARI.hakkinda = hakkindaBolumunuDoldur;
+
 // ---------------------------------------------------------------- olaylar
 
 function boyutla() {

@@ -18,11 +18,13 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
+import surum
+
 BELIRTEC_BASLIGI = "X-YZ-Token"
 GOVDE_SINIRI = 1_000_000      # bayt: bir istek gövdesinin en çok boyu
 GOVDE_ZAMAN_ASIMI = 10        # sn: gövdenin okunması için üst sınır
 HATA_LOGU_SINIRI = 1_000_000  # bayt: hata.log bu boyu aşınca yedeğe alınır
-KIMLIK = {"uygulama": "yz-merkezi", "surum": "1.0"}
+KIMLIK = surum.kimlik()  # /api/kimlik yanıtı (surum.py: uygulama adı ve semver sürüm)
 
 GUVENLIK_BASLIKLARI = (
     ("X-Frame-Options", "DENY"),

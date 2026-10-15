@@ -11,3 +11,7 @@ masaustu-ayarlar*.json
 .tarayici-profili/
 .tarayici-profili*/
 __pycache__/
+# Sürüm kurulum düzeni (guncelleme.py): kurulu sürümler, etkin sürüm işaretçisi ve üretilen manifest
+surumler/
+guncel.json
+manifest.json

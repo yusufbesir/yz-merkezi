@@ -23,9 +23,16 @@ Güncelleme: 2026-10-15 20:52 (TR)
 
 - 21:55 Denetim 2. tur (model sürümü reddi, açılışta DPAPI geçişi, sunucu.py yönlendirme yasağı): ajan çalışıyor.
 
+- 22:05 Denetim 2. tur commit 862631a, 512 test OK, koordinatöre bildirildi.
+
+- 22:10 Yeni kural (Yusuf, koordinatör aracılığıyla): manifest tabanlı, kendini temizleyen güncelleme mekanizması. Ajan (Opus) çalışıyor: surum.py, manifest, guncelleme.py, testler.
+
+- 22:17 Siber güvenlik denetmeni 6 madde (koordinatör): belirteç Edge komut satırından çıkarılsın; Jev öncesi hassas tarama; kasa bağlamı dışarı gitmeden kullanıcı onayı; hafiza.py hash denetimi; geçmiş kaydedilmeden maskeleme; hassas kalıpları genişlet. Güncelleme ajanı bitince (masaustu_sunucu.py çakışması) başlatılacak.
+
 ## Sıradaki adımlar
-- Ajan raporu → tam suit → commit → push → koordinatöre özet + commit.
-- Tamamlandı. Bekleyen: kullanıcı Claude/Gemini girişi; denetmenin jev_acik sorusuna Yusuf'un yanıtı.
+- Güncelleme ajanı raporu → tam suit → commit → push → koordinatöre commit.
+- Sonra siber güvenlik 6 maddesi için ajan → test → commit → koordinatöre commit.
+- Bekleyen: kullanıcı Claude/Gemini girişi; jev_acik ve sürümlü Jev kimliği kararı (Yusuf). Bekleyen: kullanıcı Claude/Gemini girişi; denetmenin jev_acik sorusuna Yusuf'un yanıtı.
 1. M ve U raporlarını al; `motorlar/BENIOKU-motorlar.md`'yi BENIOKU'ya birleştir.
 2. Doğrulama ajanı (Sonnet): tam suit, sahte motorlarla akış, gerçek motorlarda yalnızca `hazir_mi()`.
 3. Commit + iki hesaba push (yedekle kalıbı: yusufbesir origin, yonkoakira yedek).
