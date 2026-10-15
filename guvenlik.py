@@ -8,6 +8,7 @@
 
 Yalnızca standart kütüphane.
 """
+import base64
 import hmac
 import json
 import os
@@ -238,6 +239,62 @@ def json_yaz(yol, veri):
         f.flush()
         os.fsync(f.fileno())
     os.replace(gecici, yol)
+
+
+# ---------------------------------------------------------------- DPAPI (API anahtarlarını diskte şifreleme)
+
+DPAPI_ONEKI = "dpapi:"
+
+
+def _dpapi_cagir(veri, sifrele):
+    """Windows DPAPI (kullanıcı kapsamı). Windows dışında ya da hata olursa ValueError (düz metne DÜŞMEZ)."""
+    if os.name != "nt":
+        raise ValueError("DPAPI yalnızca Windows'ta kullanılabilir; anahtar düz metin olarak saklanmadı.")
+    import ctypes
+    from ctypes import wintypes
+
+    class VeriBlogu(ctypes.Structure):
+        _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
+
+    crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    islev = crypt32.CryptProtectData if sifrele else crypt32.CryptUnprotectData
+    islev.argtypes = [ctypes.POINTER(VeriBlogu), wintypes.LPCWSTR if sifrele else ctypes.POINTER(wintypes.LPWSTR),
+                      ctypes.POINTER(VeriBlogu), ctypes.c_void_p, ctypes.c_void_p, wintypes.DWORD,
+                      ctypes.POINTER(VeriBlogu)]
+    islev.restype = wintypes.BOOL
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel32.LocalFree.restype = ctypes.c_void_p
+    CRYPTPROTECT_UI_FORBIDDEN = 0x1
+    tampon = ctypes.create_string_buffer(veri, len(veri))
+    girdi = VeriBlogu(len(veri), ctypes.cast(tampon, ctypes.POINTER(ctypes.c_char)))
+    cikti = VeriBlogu()
+    if not islev(ctypes.byref(girdi), None, None, None, None, CRYPTPROTECT_UI_FORBIDDEN, ctypes.byref(cikti)):
+        raise ValueError("DPAPI işlemi başarısız oldu (anahtar bu kullanıcı/bilgisayar için çözülemiyor olabilir).")
+    try:
+        return ctypes.string_at(cikti.pbData, cikti.cbData)
+    finally:
+        kernel32.LocalFree(ctypes.cast(cikti.pbData, ctypes.c_void_p))
+
+
+def dpapi_sifrele(metin):
+    """Metni DPAPI ile şifreler: "dpapi:" + base64. Başarısızsa ValueError (düz metin döndürmez)."""
+    return DPAPI_ONEKI + base64.b64encode(_dpapi_cagir(metin.encode("utf-8"), True)).decode("ascii")
+
+
+def dpapi_sifreli_mi(deger):
+    return isinstance(deger, str) and deger.startswith(DPAPI_ONEKI)
+
+
+def dpapi_coz(deger):
+    """"dpapi:" değerini çözer; önek yoksa ya da çözülemezse ValueError."""
+    if not dpapi_sifreli_mi(deger):
+        raise ValueError("Değer DPAPI ile şifreli değil.")
+    try:
+        ham = base64.b64decode(deger[len(DPAPI_ONEKI):], validate=True)
+    except ValueError:
+        raise ValueError("DPAPI değeri geçersiz.") from None
+    return _dpapi_cagir(ham, False).decode("utf-8")
 
 
 # ---------------------------------------------------------------- HTTP karışımı

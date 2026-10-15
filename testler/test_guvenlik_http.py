@@ -488,7 +488,9 @@ class ApiSurumuHttpTesti(OrtakSunucuTestleri, SunucuTabani):
             self.assertEqual(self.istek("POST", "/api/anahtar", {"id": "openai", "anahtar": "x"})[0], 200)
         yedekler = list(self.klasor.glob("ayar.bozuk-*.json"))
         self.assertEqual([y.read_text("utf-8") for y in yedekler], ["{bozuk anahtar dosyasi"])
-        self.assertEqual(json.loads(self.ayar.read_text("utf-8"))["anahtarlar"], {"openai": "x"})
+        kayitli = json.loads(self.ayar.read_text("utf-8"))["anahtarlar"]["openai"]
+        self.assertTrue(kayitli.startswith("dpapi:"))  # anahtar diskte şifreli
+        self.assertEqual(guvenlik.dpapi_coz(kayitli), "x")
 
 
 class YardimciTesti(unittest.TestCase):

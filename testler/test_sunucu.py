@@ -8,6 +8,7 @@ import sys
 import tempfile
 import threading
 import unittest
+import unittest.mock
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -119,6 +120,62 @@ class SunucuTesti(unittest.TestCase):
         ids = {s["id"] for s in liste}
         self.assertTrue({"openai", "gemini", "anthropic", "ozel-sahte-oa"} <= ids)
         self.assertNotIn(ANAHTAR, json.dumps(liste))
+
+    def dosya_metni(self):
+        return sunucu.AYAR_DOSYASI.read_text("utf-8")
+
+    @unittest.skipUnless(os.name == "nt", "DPAPI yalnızca Windows'ta")
+    def test_dpapi_gidis_donus(self):
+        import guvenlik
+        sifreli = guvenlik.dpapi_sifrele("gizli-deger-123")
+        self.assertTrue(sifreli.startswith("dpapi:"))
+        self.assertNotIn("gizli-deger-123", sifreli)
+        self.assertEqual(guvenlik.dpapi_coz(sifreli), "gizli-deger-123")
+        with self.assertRaises(ValueError):
+            guvenlik.dpapi_coz("dpapi:!!!")
+        with self.assertRaises(ValueError):
+            guvenlik.dpapi_coz("duz-metin")
+
+    @unittest.skipUnless(os.name == "nt", "DPAPI yalnızca Windows'ta")
+    def test_dosyada_duz_anahtar_yok(self):
+        metin = self.dosya_metni()
+        self.assertNotIn(ANAHTAR, metin)
+        anahtarlar = json.loads(metin)["anahtarlar"]
+        self.assertTrue(anahtarlar and all(v.startswith("dpapi:") for v in anahtarlar.values()))
+        self.assertNotIn(ANAHTAR, json.dumps(self.get("/api/saglayicilar")))
+
+    @unittest.skipUnless(os.name == "nt", "DPAPI yalnızca Windows'ta")
+    def test_duz_metin_gecisi(self):
+        ayar = json.loads(self.dosya_metni())
+        ayar["anahtarlar"]["ozel-sahte-oa"] = ANAHTAR  # eski sürümün düz metin kaydı
+        sunucu.AYAR_DOSYASI.write_text(json.dumps(ayar), "utf-8")
+        self.assertEqual(sunucu.anahtar_al(sunucu.saglayici_bul("ozel-sahte-oa"))[0], ANAHTAR)  # düz kabul edilir
+        self.post("/api/anahtar", {"id": "ozel-sahte-an", "anahtar": ANAHTAR})  # ilk yazım
+        self.assertNotIn(ANAHTAR, self.dosya_metni())
+        self.assertEqual(sunucu.anahtar_al(sunucu.saglayici_bul("ozel-sahte-oa"))[0], ANAHTAR)
+
+    def test_dpapi_yoksa_duz_metne_dusmez(self):
+        with unittest.mock.patch("guvenlik.os.name", "posix"):
+            with self.assertRaises(ValueError):
+                sunucu.guvenlik.dpapi_sifrele("x")
+
+    def test_adres_degisince_anahtar_silinir(self):
+        adres = f"http://127.0.0.1:{self.sahte.server_port}/oa"
+        self.post("/api/saglayici-ekle", {"ad": "Gecici Adr", "tur": "openai", "adres": adres, "anahtar": ANAHTAR})
+        try:
+            self.assertEqual(sunucu.anahtar_al(sunucu.saglayici_bul("ozel-gecici-adr"))[0], ANAHTAR)
+            self.post("/api/saglayici-ekle", {"ad": "Gecici Adr", "tur": "openai", "adres": adres + "2"})
+            self.assertEqual(sunucu.anahtar_al(sunucu.saglayici_bul("ozel-gecici-adr")), ("", None))
+        finally:
+            self.post("/api/saglayici-sil", {"id": "ozel-gecici-adr"})
+
+    def test_loopback_disi_http_reddedilir(self):
+        with self.assertRaises(urllib.error.HTTPError) as h:
+            self.post("/api/saglayici-ekle", {"ad": "Dis", "tur": "openai", "adres": "http://example.com/v1", "anahtar": "k"})
+        self.assertEqual(h.exception.code, 400)
+        self.assertIsNone(sunucu.saglayici_bul("ozel-dis"))
+        self.post("/api/saglayici-ekle", {"ad": "Dis", "tur": "openai", "adres": "https://example.com/v1"})
+        self.post("/api/saglayici-sil", {"id": "ozel-dis"})
 
     def test_openai_modelleri_yeniden_eskiye(self):
         modeller = self.get("/api/modeller?id=ozel-sahte-oa")["modeller"]

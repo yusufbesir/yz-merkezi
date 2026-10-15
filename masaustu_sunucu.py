@@ -78,6 +78,7 @@ AYAR_MANTIKSAL += ("hafiza_ekle", "hafiza_aday")
 VARSAYILAN_AYARLAR.update(hassas_uyari=True, otomatik_yonlendirme=False)
 AYAR_MANTIKSAL += ("hassas_uyari", "otomatik_yonlendirme")
 # Jev (jev.py, TypeSafe karar modeli): açık/kapalı varsayılan AÇIK; yanıt puanlama varsayılan KAPALI (yanıtlar Jev'e gider).
+# Jev varsayılan AÇIK: kullanıcı kararı 2026-10-11 (proje sohbeti); mesaj metni TypeSafe'in uzak Jev sunucusuna gider.
 VARSAYILAN_AYARLAR.update(jev_acik=True, jev_yanit_puanla=False)
 AYAR_MANTIKSAL += ("jev_acik", "jev_yanit_puanla")
 JEV_HASSAS_ESIGI = 0.6        # Jev'in "yok" dışı seçiminin olasılığı en az bu kadarsa onay istenir

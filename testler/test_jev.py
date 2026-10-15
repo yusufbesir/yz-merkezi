@@ -104,6 +104,22 @@ class HazirlikTesti(JevTabani):
         self.assertEqual((d["model"], d["saglayici"]), ("typesafe-ai/jev", "vercel"))
         self.assertEqual(self.sahte.istekler, [], "hazır olup olmadığına bakmak ağa çıkmaz")
 
+    def test_model_alani_yoksa_hazir_degil(self):
+        ayar = json.loads(self.ayar_dosyasi.read_text("utf-8"))
+        del ayar["model"]
+        self.ayar_dosyasi.write_text(json.dumps(ayar), "utf-8")
+        self.assertFalse(jev.hazir_mi())
+        self.assertIn("model belirtilmemiş", jev.durum()["sebep"])
+        with self.assertRaises(jev.JevHatasi):
+            jev.sinifla("merhaba", ["a", "b"])
+        self.assertEqual(self.sahte.istekler, [])
+
+    def test_model_ortam_degiskeniyle_degismez_ve_istekte_aynen_gider(self):
+        self.ayar_yaz(model="typesafe-ai/jev-sabit-1")
+        with mock.patch.dict(os.environ, {"JEV_MODEL": "baska-model"}):
+            jev.sinifla("merhaba", ["a", "b"])
+        self.assertEqual(self.sahte.istekler[0]["govde"]["model"], "typesafe-ai/jev-sabit-1")
+
     def test_ayar_dosyasi_yoksa_hazir_degil(self):
         self.ayar_dosyasi.unlink()
         self.assertFalse(jev.hazir_mi())

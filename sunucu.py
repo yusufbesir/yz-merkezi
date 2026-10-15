@@ -65,6 +65,12 @@ def ayarlari_oku():
 
 
 def ayarlari_yaz(ayar):
+    """Yazmadan önce `anahtarlar` değerlerini DPAPI ile şifreler (düz metin geçişi); DPAPI yoksa hata verir."""
+    anahtarlar = ayar.get("anahtarlar")
+    if isinstance(anahtarlar, dict):
+        ayar = dict(ayar, anahtarlar={
+            k: (v if guvenlik.dpapi_sifreli_mi(v) else guvenlik.dpapi_sifrele(v))
+            for k, v in anahtarlar.items() if isinstance(v, str) and v})
     guvenlik.json_yaz(AYAR_DOSYASI, ayar)
 
 
@@ -86,7 +92,13 @@ def anahtar_al(s):
     """Önce ayarlar.json, sonra ortam değişkeni. (anahtar, kaynak) döner."""
     dosyadaki = ayarlari_oku().get("anahtarlar", {}).get(s["id"])
     if dosyadaki:
-        return dosyadaki, "dosya"
+        if not guvenlik.dpapi_sifreli_mi(dosyadaki):
+            return dosyadaki, "dosya"  # eski düz metin kaydı: kabul edilir, ilk yazımda şifrelenir
+        try:
+            return guvenlik.dpapi_coz(dosyadaki), "dosya"
+        except ValueError as h:
+            guvenlik.hata_yaz(f"Kayıtlı API anahtarı çözülemedi ({s['id']}): {h}")
+            return "", None
     ortamdaki = os.environ.get(s.get("anahtar_ortam") or "")
     if ortamdaki:
         return ortamdaki, "ortam"
@@ -313,6 +325,18 @@ ICERIK_TURLERI = {".html": "text/html; charset=utf-8", ".css": "text/css; charse
                   ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml", ".ico": "image/x-icon", ".png": "image/png"}
 
 
+def guvenlik_adres_uygun(adres):
+    """Loopback dışındaki sağlayıcı adresleri https olmalı (anahtar açık metin gitmesin)."""
+    try:
+        parca = urlparse(adres)
+        sunucu_adi = parca.hostname
+    except ValueError:
+        return False
+    if not sunucu_adi or parca.scheme not in ("http", "https"):
+        return False
+    return parca.scheme == "https" or sunucu_adi in ("localhost", "127.0.0.1", "::1")
+
+
 class Isleyici(guvenlik.GuvenlikKarisimi, BaseHTTPRequestHandler):
     def log_message(self, bicim, *args):
         pass
@@ -464,11 +488,16 @@ class Isleyici(guvenlik.GuvenlikKarisimi, BaseHTTPRequestHandler):
         tur = g.get("tur", "openai")
         if not ad or not adres.startswith(("http://", "https://")) or tur not in ADAPTORLER:
             return self._json({"hata": "Ad, http(s) ile başlayan adres ve geçerli bir tür gerekli."}, 400)
+        if not guvenlik_adres_uygun(adres):
+            return self._json({"hata": "Yerel (localhost/127.0.0.1) olmayan adresler için https gerekli."}, 400)
         sid = "ozel-" + (re.sub(r"[^a-z0-9]+", "-", ad.lower()).strip("-") or "saglayici")
         with AYAR_KILIDI:
             ayar = ayarlari_oku()
+            eski = next((o for o in ayar.get("ozel_saglayicilar", []) if o["id"] == sid), None)
             ozeller = [o for o in ayar.get("ozel_saglayicilar", []) if o["id"] != sid]
             anahtar = (g.get("anahtar") or "").strip()
+            if eski and eski.get("adres") != adres:  # adres değişti: eski anahtar yeni adrese taşınmaz
+                ayar.get("anahtarlar", {}).pop(sid, None)
             ozeller.append({"id": sid, "ad": ad, "tur": tur, "adres": adres,
                             "anahtar_gerekli": bool(anahtar), "renk": "#9b59b6"})
             ayar["ozel_saglayicilar"] = ozeller

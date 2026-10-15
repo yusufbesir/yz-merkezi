@@ -7,7 +7,7 @@ uygulama kurallarla çalışır.
 
 Yapılandırma: Hafıza OS kasasındaki `komuta/jev.json` (yol `YZ_JEV_AYAR` ortam değişkeniyle değişir; testler
 geçici dosya kullanır). Kullanılan alanlar: `credentials_file` (anahtar dosyasının mutlak yolu), `provider`
-(`vercel` | `typesafe`), `model`, `base_url`, `mode` (`off` ise Jev hiç çağrılmaz), `allow_custom_endpoint`.
+(`vercel` | `typesafe`), `model` (zorunlu; sürüm jev.json'dan sabitlenir, "latest" kullanılmaz), `base_url`, `mode` (`off` ise Jev hiç çağrılmaz), `allow_custom_endpoint`.
 
 Çağrı biçimi kasadaki istemciden (`araclar/jev_client.py`, `choice` türü soru) AYNEN alınmıştır:
     POST <base_url>/v1/systemone   (base_url `/v1` ile bitiyorsa <base_url>/systemone)
@@ -24,7 +24,7 @@ Güvenlik:
 - Anahtar yalnızca sağlayıcının resmi HTTPS sunucusuna (`vercel` → ai-gateway.vercel.sh, `typesafe` →
   api.typesafe.ai) ya da yerel bir ağ geçidine (localhost, 127.0.0.1, ::1; ortam vekil sunucusu atlanır) gider.
   Başka bir sunucu için jev.json'da açıkça `"allow_custom_endpoint": true` gerekir. Yönlendirme izlenmez.
-- Mesaj metni Jev'e gider (Yusuf'un onayıyla; başka hiçbir uzak servise gitmez) ama hiçbir yere kaydedilmez:
+- Mesaj metni Jev'e gider (kullanıcı onayı 2026-10-11, proje sohbeti; başka hiçbir uzak servise gitmez) ama hiçbir yere kaydedilmez:
   durumda yalnızca sayaçlar, son çağrı zamanı, sonucu ve Türkçe hata sebebi tutulur.
 """
 import json
@@ -48,7 +48,6 @@ YANIT_EN_FAZLA = 1_000_000  # bayt: sunucu yanıtı için üst sınır
 SECENEK_EN_AZ, SECENEK_EN_FAZLA = 2, 12  # kasadaki istemcinin `choice` sorusu sınırları
 SAGLAYICI_SUNUCULARI = {"vercel": "ai-gateway.vercel.sh", "typesafe": "api.typesafe.ai"}
 ANAHTAR_ALANLARI = {"vercel": "AI_GATEWAY_API_KEY", "typesafe": "TYPESAFE_API_KEY"}
-VARSAYILAN_MODELLER = {"vercel": "typesafe-ai/jev", "typesafe": "jev-latest"}
 YEREL_SUNUCULAR = ("localhost", "127.0.0.1", "::1")
 SORU_KIMLIGI = "secim"
 _SECENEK_KALIBI = re.compile(r"[a-z][a-z0-9_]{0,39}")  # kasadaki istemcinin seçenek anahtarı kuralı
@@ -87,7 +86,9 @@ def _ayar_oku():
     saglayici = ham.get("provider", "vercel")
     if saglayici not in SAGLAYICI_SUNUCULARI:
         raise JevHatasi("Jev sağlayıcısı tanınmıyor (vercel ya da typesafe olmalı).")
-    model = ham.get("model", VARSAYILAN_MODELLER[saglayici])
+    model = ham.get("model")  # sürüm sabitlenir: varsayılan ya da "latest" yok, ortam değişkeniyle de değişmez
+    if model is None:
+        raise JevHatasi("jev.json içinde model belirtilmemiş.")
     taban = ham.get("base_url", "https://" + SAGLAYICI_SUNUCULARI[saglayici] + ("/typesafe" if saglayici == "vercel" else ""))
     anahtar_dosyasi = ham.get("credentials_file")
     mod = ham.get("mode", "on")
