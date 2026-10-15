@@ -26,7 +26,7 @@ from pathlib import Path
 import surum
 
 BELIRTEC_BASLIGI = "X-YZ-Token"
-CEREZ_ADI = "yz_oturum"
+CEREZ_ON_EKI = "yz_oturum"   # çerez adı porta özgüdür: yz_oturum_<port> (çerezler port ayırmaz)
 ACILIS_KODU_SURESI = 30       # sn: Edge'e verilen açılış kodunun geçerlilik süresi (tek kullanımlık)
 GOVDE_SINIRI = 1_000_000      # bayt: bir istek gövdesinin en çok boyu
 GOVDE_ZAMAN_ASIMI = 10        # sn: gövdenin okunması için üst sınır
@@ -173,13 +173,20 @@ def belirtec_gecerli_mi(gelen, beklenen):
     return hmac.compare_digest(str(gelen).encode("utf-8"), str(beklenen).encode("utf-8"))
 
 
-def oturum_cerezi(belirtec):
+def cerez_adi(port):
+    """Bu sunucunun çerez adı: yz_oturum_<port>. Çerezler portu ayırmaz (127.0.0.1'deki her port aynı çerez
+    kavanozunu görür); porta özgü ad, başka bir portta çalışan örneğin ya da başka bir uygulamanın çerezinin
+    bu sunucuda geçerli sayılmasını önler."""
+    return f"{CEREZ_ON_EKI}_{int(port)}"
+
+
+def oturum_cerezi(belirtec, port):
     """Set-Cookie değeri: belirteç JS'e görünmez (HttpOnly), başka siteden gelen isteklere eklenmez (SameSite=Strict)."""
-    return f"{CEREZ_ADI}={belirtec}; HttpOnly; SameSite=Strict; Path=/"
+    return f"{cerez_adi(port)}={belirtec}; HttpOnly; SameSite=Strict; Path=/"
 
 
-def cerezden_belirtec(cerez_basligi):
-    """Cookie başlığındaki oturum belirteci (yoksa ya da okunamazsa "")."""
+def cerezden_belirtec(cerez_basligi, port):
+    """Cookie başlığındaki bu porta ait oturum belirteci (yoksa, başka portun çerezi ise ya da okunamazsa "")."""
     if not cerez_basligi:
         return ""
     try:
@@ -187,7 +194,7 @@ def cerezden_belirtec(cerez_basligi):
         c.load(str(cerez_basligi))
     except CookieError:
         return ""
-    m = c.get(CEREZ_ADI)
+    m = c.get(cerez_adi(port))
     return m.value if m is not None else ""
 
 
@@ -389,11 +396,11 @@ class GuvenlikKarisimi:
         return False
 
     def _belirtec_dogru_mu(self):
-        """Belirteç X-YZ-Token başlığında YA DA (alt sınıf izin veriyorsa) yz_oturum çerezinde; sabit zamanlı karşılaştırma."""
+        """Belirteç X-YZ-Token başlığında YA DA (alt sınıf izin veriyorsa) yz_oturum_<port> çerezinde; sabit zamanlı karşılaştırma."""
         beklenen = self._beklenen_belirtec()
         if belirtec_gecerli_mi(self.headers.get(BELIRTEC_BASLIGI, ""), beklenen):
             return True
-        cerez = cerezden_belirtec(self.headers.get("Cookie", ""))
+        cerez = cerezden_belirtec(self.headers.get("Cookie", ""), self.server.server_port)
         return bool(cerez) and self._cerez_kabul_edilir_mi() and belirtec_gecerli_mi(cerez, beklenen)
 
     def _govdeyi_at(self):

@@ -19,12 +19,14 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
 import guvenlik
+import hassas
 
 KOK = Path(__file__).resolve().parent
 ARAYUZ = KOK / "arayuz"
 KAYIT_DOSYASI = KOK / "saglayicilar.json"
 AYAR_DOSYASI = guvenlik.veri_yolu("YZ_AYAR_DOSYASI", "ayarlar.json")  # varsayılan: %LOCALAPPDATA%\YZMerkezi
 ESKI_AYAR_DOSYASI = KOK / "ayarlar.json"  # eski sürümlerin yeri (ilk açılışta taşınır)
+MASKELE_EN_FAZLA_ADET = 500   # bir /api/maskele isteğindeki en çok metin
 PORT = int(os.environ.get("YZ_PORT", "8765"))
 EN_FAZLA_TOKEN = 8192
 
@@ -389,7 +391,7 @@ class Isleyici(guvenlik.GuvenlikKarisimi, BaseHTTPRequestHandler):
             guvenlik.hata_yaz("Geçersiz ya da tükenmiş açılış kodu reddedildi (/ac/, API sürümü)")
             return self._json({"hata": "Açılış bağlantısı geçersiz ya da süresi dolmuş. baslat-api.bat ile yeniden açın."}, 403)
         self.send_response(302)
-        self.send_header("Set-Cookie", guvenlik.oturum_cerezi(BELIRTEC))
+        self.send_header("Set-Cookie", guvenlik.oturum_cerezi(BELIRTEC, self.server.server_port))
         self.send_header("Location", "/")
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", "0")
@@ -460,6 +462,8 @@ class Isleyici(guvenlik.GuvenlikKarisimi, BaseHTTPRequestHandler):
         try:
             if yol == "/api/sohbet":
                 return self._sohbet(g)
+            if yol == "/api/maskele":
+                return self._maskele(g)
             if yol == "/api/tara":
                 return self._json({"bulunanlar": yerelleri_tara()})
             if yol == "/api/anahtar":
@@ -471,6 +475,19 @@ class Isleyici(guvenlik.GuvenlikKarisimi, BaseHTTPRequestHandler):
         except Exception as h:  # noqa: BLE001
             return self._json({"hata": guvenlik.beklenmeyen_hata(yol, h)}, 500)
         return self._json({"hata": "Bilinmeyen adres."}, 404)
+
+    def _maskele(self, g):
+        """POST /api/maskele {"metin": str} ya da {"metinler": [str, ...]} -> aynı biçimde maskeli metin(ler).
+
+        Arayüz sohbet geçmişini localStorage'a yazmadan önce metinleri buradan geçirir (kurallar yalnız sunucuda)."""
+        if isinstance(g.get("metinler"), list):
+            liste = g["metinler"]
+            if len(liste) > MASKELE_EN_FAZLA_ADET or not all(isinstance(m, str) for m in liste):
+                return self._json({"hata": "metinler en çok %d metin içeren bir dizi olmalı." % MASKELE_EN_FAZLA_ADET}, 400)
+            return self._json({"metinler": [hassas.maskele(m) for m in liste]})
+        if isinstance(g.get("metin"), str):
+            return self._json({"metin": hassas.maskele(g["metin"])})
+        return self._json({"hata": "metin (metin) ya da metinler (metin dizisi) gerekli."}, 400)
 
     def _dosya(self, yol):
         hedef = (ARAYUZ / ("index.html" if yol in ("", "/") else yol.lstrip("/"))).resolve()

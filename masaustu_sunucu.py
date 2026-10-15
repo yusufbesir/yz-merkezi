@@ -1785,7 +1785,7 @@ class Isleyici(guvenlik.GuvenlikKarisimi, BaseHTTPRequestHandler):
             guvenlik.hata_yaz("Geçersiz ya da tükenmiş açılış kodu reddedildi (/ac/)")
             return self._json({"hata": "Açılış bağlantısı geçersiz ya da süresi dolmuş. Uygulamayı yeniden açın."}, 403)
         self.send_response(302)
-        self.send_header("Set-Cookie", guvenlik.oturum_cerezi(BELIRTEC))
+        self.send_header("Set-Cookie", guvenlik.oturum_cerezi(BELIRTEC, self.server.server_port))
         self.send_header("Location", "/")
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", "0")

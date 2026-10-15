@@ -10,7 +10,8 @@ Dönen metindeki sır benzeri satırlar (API anahtarı, parola, şifre ...) atı
 BÜTÜNLÜK (ilk görüşte güven): `araclar/hafiza.py` ilk kez başarıyla çalıştırıldığında sha256 özeti
 `%LOCALAPPDATA%\\YZMerkezi\\hafiza-py.sha256` dosyasına yazılır (yol `YZ_HAFIZA_HASH` ile değişir). Sonraki her
 çalıştırmadan önce özet yeniden hesaplanır; değişmişse araç ÇALIŞTIRILMAZ, bağlam boş döner ve `durum()` uyarı
-taşır. Kullanıcı yeni sürümü Ayarlar → Hafıza'dan onaylayınca (`hash_onayla()`) yeni özet kabul edilir.
+taşır. Denetim ile çalıştırma arasında dosya değiştirilemesin diye dosya TEK SEFERDE bayt olarak okunur; özet bu
+baytlardan hesaplanır ve çalıştırılan kod da aynı baytlardır (alt sürece stdin'den verilir, bkz. `_BASLATICI`). Kullanıcı yeni sürümü Ayarlar → Hafıza'dan onaylayınca (`hash_onayla()`) yeni özet kabul edilir.
 
 YAZMA: Hafıza OS'a (katalog, Mem0, aday kuyruğu) doğrudan yazılmaz. Kasadaki `hafiza.py candidate-add`
 kuyruğu kaynak dosyada aynen bulunan, doğrulanmış kalıcı gerçekler içindir; sohbet yanıtı özetleri bu
@@ -116,6 +117,15 @@ def _arac_ozeti(kasa=None):
         return None
 
 
+def _arac_oku(kasa=None):
+    """hafiza.py baytlarını tek seferde okur; okunamazsa None. Özet ve çalıştırma AYNI baytlardan yapılır (TOCTOU yok)."""
+    yol = (kasa or kasa_yolu()) / HAFIZA_ARACI
+    try:
+        return yol.read_bytes()
+    except OSError:
+        return None
+
+
 def _guvenilen_ozet():
     try:
         deger = hash_dosyasi().read_text("utf-8").strip().lower()
@@ -193,21 +203,36 @@ def baglam_getir(metin, limit=SINIR_KAYIT, butce=KARAKTER_BUTCESI, zaman_asimi=Z
     elif not (kasa / HAFIZA_ARACI).is_file():
         sonuc = _bos("Hafıza aracı bulunamadı (araclar/hafiza.py).")
     else:
-        ozet, guvenilen = _arac_ozeti(kasa), _guvenilen_ozet()
-        if guvenilen and ozet != guvenilen:
+        kod = _arac_oku(kasa)   # tek okuma: özet de, çalıştırılacak kod da bu baytlardır
+        ozet = hashlib.sha256(kod).hexdigest() if kod is not None else None
+        guvenilen = _guvenilen_ozet()
+        if kod is None:
+            sonuc = _bos("Hafıza aracı okunamadı (araclar/hafiza.py).")
+        elif guvenilen and ozet != guvenilen:
             guvenlik.hata_yaz("hafiza.py özeti güvenilen özetle uyuşmuyor; araç çalıştırılmadı")
             sonuc = _bos(HASH_UYARISI + ".")
         else:
-            sonuc = _calistir(kasa, sorgu, limit, butce, zaman_asimi)
+            sonuc = _calistir(kasa, sorgu, limit, butce, zaman_asimi, kod)
             if not guvenilen and ozet and sonuc["sebep"] is None:  # ilk başarılı çalıştırma: bu sürüme güven
                 _ozeti_yaz(ozet)
     _durumu_yaz(sonuc["mod"], sonuc["sebep"])
     return sonuc
 
 
-def _calistir(kasa, sorgu, limit, butce, zaman_asimi):
+# Alt süreç başlatıcısı: hafiza.py kodunu stdin'den (denetlenen baytlar) alır; `__file__`, `sys.argv[0]` ve
+# `sys.path[0]` dosyadan çalıştırılmış gibi ayarlanır. Dosya diskten yeniden okunmaz.
+_BASLATICI = (
+    "import sys, os\n"
+    "y = sys.argv[1]; sys.argv = sys.argv[1:]\n"
+    "k = sys.stdin.buffer.read()\n"
+    "sys.path[0] = os.path.dirname(y)\n"
+    "exec(compile(k, y, 'exec'), {'__name__': '__main__', '__file__': y, '__builtins__': __builtins__})\n"
+)
+
+
+def _calistir(kasa, sorgu, limit, butce, zaman_asimi, kod):
     import json
-    arguman = [str(kasa / HAFIZA_ARACI), "--vault", ".", "context", "--limit", str(limit),
+    arguman = ["-c", _BASLATICI, str(kasa / HAFIZA_ARACI), "--vault", ".", "context", "--limit", str(limit),
                "--char-budget", str(butce), "--local", "--", sorgu]
     ortam = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
     ek = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
@@ -215,7 +240,7 @@ def _calistir(kasa, sorgu, limit, butce, zaman_asimi):
     for komut in _python_komutlari():
         try:
             islem = subprocess.run(komut + arguman, cwd=str(kasa), capture_output=True, timeout=zaman_asimi,
-                                   env=ortam, stdin=subprocess.DEVNULL, **ek)
+                                   env=ortam, input=kod, **ek)
             break
         except subprocess.TimeoutExpired:
             return _bos(f"Hafıza aracı {zaman_asimi} saniyede yanıt vermedi; mesaj bağlamsız gitti.")

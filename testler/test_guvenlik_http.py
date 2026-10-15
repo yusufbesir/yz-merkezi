@@ -207,7 +207,7 @@ class MasaustuHttpTesti(OrtakSunucuTestleri, SunucuTabani):
         return self.istek("GET", f"/ac/{kod}", belirtec=False, basliklar=basliklar)
 
     def cerezli(self, yontem, yol, govde=None, basliklar=None, cerez=None):
-        b = {"Cookie": f"yz_oturum={cerez or self.belirtec}"}
+        b = {"Cookie": f"yz_oturum_{self.port}={cerez or self.belirtec}"}
         b.update(basliklar or {})
         return self.istek(yontem, yol, govde, basliklar=b, belirtec=False)
 
@@ -217,7 +217,7 @@ class MasaustuHttpTesti(OrtakSunucuTestleri, SunucuTabani):
         self.assertEqual(durum_, 302)
         self.assertEqual(y.getheader("Location"), "/")
         cerez = y.getheader("Set-Cookie")
-        self.assertEqual(cerez, f"yz_oturum={ms.BELIRTEC}; HttpOnly; SameSite=Strict; Path=/")
+        self.assertEqual(cerez, f"yz_oturum_{self.port}={ms.BELIRTEC}; HttpOnly; SameSite=Strict; Path=/")
         self.basliklar_tamam(y)
         durum_, y, govde = self.ac(kod)            # ikinci kullanım
         self.assertEqual(durum_, 403)
@@ -246,6 +246,10 @@ class MasaustuHttpTesti(OrtakSunucuTestleri, SunucuTabani):
         self.assertEqual(self.istek("GET", "/api/durum", belirtec=False)[0], 403)
         self.assertEqual(self.cerezli("GET", "/api/durum", cerez="yanlis")[0], 403)
         self.assertEqual(self.cerezli("GET", "/api/durum", basliklar={"Cookie": "baska=1"})[0], 403)
+        # farklı porta adlı (ya da portsuz eski adlı) çerez doğru belirteci taşısa bile 403
+        for ad in (f"yz_oturum_{self.port + 1}", "yz_oturum"):
+            self.assertEqual(self.istek("GET", "/api/durum", belirtec=False,
+                                        basliklar={"Cookie": f"{ad}={self.belirtec}"})[0], 403, ad)
 
     def test_cerezle_sec_fetch_site_denetimi(self):
         for site, beklenen in (("same-origin", 200), ("cross-site", 403), ("same-site", 403), ("none", 403)):
@@ -536,23 +540,45 @@ class ApiSurumuHttpTesti(OrtakSunucuTestleri, SunucuTabani):
     korumali_get = "/api/saglayicilar"
     korumali_post = ("/api/saglayici-sil", {"id": "yok"})
 
+    def test_maskele_ucu(self):
+        anahtar = "sk-" + "abcdefghijklmnop1234"
+        d, _, govde = self.istek("POST", "/api/maskele", {"metin": f"anahtar {anahtar} bu"})
+        self.assertEqual(d, 200)
+        self.assertEqual(json.loads(govde), {"metin": "anahtar [GİZLİ:api_anahtari] bu"})
+        d, _, govde = self.istek("POST", "/api/maskele", {"metinler": ["merhaba", f"parola: x1y2z3 {anahtar}"]})
+        self.assertEqual(json.loads(govde), {"metinler": ["merhaba", "parola: [GİZLİ:parola] [GİZLİ:api_anahtari]"]})
+        for kotu in ({}, {"metin": 5}, {"metinler": "x"}, {"metinler": ["a", 3]}, {"metinler": ["a"] * 501}):
+            self.assertEqual(self.istek("POST", "/api/maskele", kotu)[0], 400, kotu)
+        self.assertEqual(self.istek("POST", "/api/maskele", {"metin": "x"}, belirtec=False)[0], 403)
+
+    def test_arayuz_gecmisi_maskesiz_yazmaz(self):
+        js = (Path(sunucu.__file__).resolve().parent / "arayuz" / "uygulama.js").read_text("utf-8")
+        i = js.index("async function kaydet()")
+        govde = js[i:js.index("function yukle()")]
+        self.assertIn("/api/maskele", js)
+        self.assertLess(govde.index("await maskele("), govde.index("localStorage.setItem"))
+
     # API sürümü de belirteci tarayıcı komut satırına (webbrowser.open) koymaz: açılış kodu + HttpOnly çerez.
     def test_acilis_kodu_ve_cerez(self):
         kod = sunucu.ACILIS_KODLARI.uret()
         durum_, y, _ = self.istek("GET", f"/ac/{kod}", belirtec=False)
         self.assertEqual(durum_, 302)
         self.assertEqual(y.getheader("Location"), "/")
-        self.assertEqual(y.getheader("Set-Cookie"), f"yz_oturum={sunucu.BELIRTEC}; HttpOnly; SameSite=Strict; Path=/")
+        self.assertEqual(y.getheader("Set-Cookie"), f"yz_oturum_{self.port}={sunucu.BELIRTEC}; HttpOnly; SameSite=Strict; Path=/")
         self.assertEqual(self.istek("GET", f"/ac/{kod}", belirtec=False)[0], 403)   # tek kullanımlık
-        b = {"Cookie": f"yz_oturum={self.belirtec}"}
+        b = {"Cookie": f"yz_oturum_{self.port}={self.belirtec}"}
         self.assertEqual(self.istek("GET", self.korumali_get, belirtec=False, basliklar=b)[0], 200)
+        # başka porta (ya da eski porta özgü olmayan ada) ait çerez bu sunucuda geçersizdir
+        for ad in (f"yz_oturum_{self.port + 1}", "yz_oturum"):
+            self.assertEqual(self.istek("GET", self.korumali_get, belirtec=False,
+                                        basliklar={"Cookie": f"{ad}={self.belirtec}"})[0], 403, ad)
         self.assertEqual(self.istek("GET", self.korumali_get, belirtec=False)[0], 403)
         self.assertEqual(self.istek("GET", self.korumali_get, belirtec=False,
                                     basliklar={**b, "Sec-Fetch-Site": "cross-site"})[0], 403)
         self.assertEqual(self.istek("GET", self.korumali_get, belirtec=False,
                                     basliklar={**b, "Sec-Fetch-Site": "same-origin"})[0], 200)
         self.assertEqual(self.istek("GET", self.korumali_get, belirtec=False,
-                                    basliklar={"Cookie": "yz_oturum=yanlis"})[0], 403)
+                                    basliklar={"Cookie": f"yz_oturum_{self.port}=yanlis"})[0], 403)
 
     def test_tarayiciya_belirtec_gitmez(self):
         acilan = []
@@ -603,11 +629,13 @@ class AcilisKodlariTesti(unittest.TestCase):
             self.assertFalse(k.tuket(kotu))
 
     def test_cerez_ayristirma(self):
-        self.assertEqual(guvenlik.cerezden_belirtec("a=1; yz_oturum=abc_DEF-1; b=2"), "abc_DEF-1")
-        for bas in ("", None, "a=1", "yz_oturum", "\x00;;=="):
-            self.assertEqual(guvenlik.cerezden_belirtec(bas), "")
-        c = guvenlik.oturum_cerezi("deger")
-        for parca in ("yz_oturum=deger", "HttpOnly", "SameSite=Strict", "Path=/"):
+        self.assertEqual(guvenlik.cerezden_belirtec("a=1; yz_oturum_8765=abc_DEF-1; b=2", 8765), "abc_DEF-1")
+        for bas in ("", None, "a=1", "yz_oturum", "yz_oturum_8765", "\x00;;=="):
+            self.assertEqual(guvenlik.cerezden_belirtec(bas, 8765), "")
+        for baska in ("yz_oturum=abc", "yz_oturum_8766=abc"):   # eski ad ve başka port kabul edilmez
+            self.assertEqual(guvenlik.cerezden_belirtec(baska, 8765), "")
+        c = guvenlik.oturum_cerezi("deger", 8765)
+        for parca in ("yz_oturum_8765=deger", "HttpOnly", "SameSite=Strict", "Path=/"):
             self.assertIn(parca, c)
 
 

@@ -140,7 +140,8 @@ class ParolaTesti(unittest.TestCase):
 class SonucBicimiTesti(unittest.TestCase):
     def test_yok(self):
         self.assertEqual(hassas.tara("Merhaba dünya"),
-                         {"kategori": "yok", "eslesme_sayisi": 0, "ornek": "", "kategoriler": [], "onem": None})
+                         {"kategori": "yok", "eslesme_sayisi": 0, "ornek": "", "kategoriler": [], "onem": None,
+                          "kirpildi": False})
         self.assertEqual(hassas.tara("")["kategori"], "yok")
         self.assertEqual(hassas.tara(None)["kategori"], "yok")
 
@@ -320,6 +321,46 @@ class MaskeleTesti(unittest.TestCase):
     def test_birden_cok_sir(self):
         m = hassas.maskele(f"{GECERLI_TC} ve sk-{'a' * 20} ve parola: x1y2z3")
         self.assertEqual(m, "[GİZLİ:kimlik] ve [GİZLİ:api_anahtari] ve parola: [GİZLİ:parola]")
+
+
+class UrlSorgusuVeSureTesti(unittest.TestCase):
+    def test_url_sorgu_degerleri_taranir(self):
+        rastgele = "Zm9vYmFyQmF6UXV4MTIzNDU2Nzg5MGFiY2RlZmdo"
+        for adres in (f"https://ornek.com/cb?token={rastgele}", f"https://ornek.com/a?x=1&key={rastgele}",
+                      f"https://ornek.com/a#access_token={rastgele}"):
+            self.assertEqual(hassas.tara(adres)["kategori"], "olasi_anahtar", adres)
+        for adres in ("https://ornek.com/a?token=abc123", "https://ornek.com/a?sayfa=12&id=345&key=kisa",
+                      "https://ornek.com/makaleler/2026/turkce-dil-rehberi-baslangic-icin?q=merhaba+dunya"):
+            self.assertEqual(hassas.tara(adres)["kategori"], "yok", adres)
+
+    def _sure(self, metin):
+        t = time.perf_counter()
+        sonuc = hassas.tara(metin)
+        gecen = time.perf_counter() - t
+        self.assertLess(gecen, 1.0, f"{len(metin)} karakter {gecen:.2f} sn")
+        return sonuc
+
+    def test_redos_sure_siniri(self):
+        import random
+        import string
+        rnd = random.Random(7)
+        for metin in ("a@b.c:" * 17000, "a@b.c:" * 20000, "a@b.c " * 20000, "x=" * 50000, "Server=a;" * 12000,
+                      "parola: " * 12000, "".join(rnd.choice(string.ascii_letters) for _ in range(100000)),
+                      "a@b.c:a1!" * 20000):
+            self._sure(metin)
+
+    def test_girdi_siniri_kirpildi_bilgisi(self):
+        self.assertFalse(hassas.tara("x" * hassas.GIRDI_SINIRI)["kirpildi"])
+        self.assertTrue(hassas.tara("x" * (hassas.GIRDI_SINIRI + 1))["kirpildi"])
+        s = hassas.tara("parola: x1y2z3 " + "a" * (hassas.GIRDI_SINIRI + 10))
+        self.assertEqual((s["kategori"], s["kirpildi"]), ("parola", True))
+        uzun = "ali@ornek.com:Gizli123! " + "b " * hassas.GIRDI_SINIRI
+        self.assertIn("[GİZLİ:parola]", hassas.maskele(uzun))
+
+    def test_eposta_parola_siniri_pozitif_negatif(self):
+        self.assertEqual(hassas.tara("ali@ornek.com:Gizli123!")["kategori"], "parola")
+        self.assertEqual(hassas.tara("ali@ornek.com / Gizli123!")["kategori"], "parola")
+        self.assertEqual(hassas.tara("ali@ornek.com: veli@ornek.com")["kategori"], "kisisel")
 
 
 if __name__ == "__main__":

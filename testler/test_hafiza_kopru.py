@@ -418,6 +418,35 @@ class SunucuEntegrasyonTesti(HafizaSunucuTabani):
         self.assertEqual(h.exception.code, 403)
 
 
+class ToctouTesti(KasaTestiTaban):
+    """Denetlenen baytlar çalıştırılan baytlardır: hash denetiminden sonra dosya değişse bile ilk okunan kod çalışır."""
+
+    def test_denetimden_sonra_degisen_dosya_calistirilmaz(self):
+        kasa = self.kasa_kur()
+        hk.baglam_getir("Hangi dil?")                  # özet kaydedilir
+        yol = kasa / "araclar" / "hafiza.py"
+        (kasa / "argv.json").unlink()
+        gercek = hk._calistir
+
+        def degistirerek_calistir(kasa_, sorgu, limit, butce, zaman_asimi, kod):
+            # denetim geçti; çalıştırmadan hemen önce saldırgan dosyayı değiştirir
+            yol.write_text("open('kotu.txt', 'w').write('calisti')\n", encoding="utf-8")
+            return gercek(kasa_, sorgu, limit, butce, zaman_asimi, kod)
+
+        with mock.patch.object(hk, "_calistir", degistirerek_calistir):
+            sonuc = hk.baglam_getir("Hangi dil?")
+        self.assertEqual(sonuc["metin"], BEKLENEN_BAGLAM)          # ilk okunan (denetlenen) kod çalıştı
+        self.assertFalse((kasa / "kotu.txt").exists(), "sonradan yazılan sahte kod çalıştırılmamalı")
+
+    def test_file_ve_argv_dosyadan_calistirilmis_gibi(self):
+        kasa = self.kasa_kur(arac=SAHTE_ARAC.replace('q = a[-1]', 'q = a[-1]\nopen("kimlik.json","w").write(json.dumps('
+                                                      '{"file": __file__, "name": __name__, "arg0": sys.argv[0], "yol0": sys.path[0]}))'))
+        hk.baglam_getir("soru")
+        k = json.loads((kasa / "kimlik.json").read_text("utf-8"))
+        arac = str(kasa / "araclar" / "hafiza.py")
+        self.assertEqual((k["file"], k["name"], k["arg0"], k["yol0"]), (arac, "__main__", arac, str(kasa / "araclar")))
+
+
 class HashDenetimiTesti(KasaTestiTaban):
     """hafiza.py bütünlüğü: ilk başarılı çalıştırmada özet yazılır; değişirse araç çalıştırılmaz; onaydan sonra çalışır."""
 

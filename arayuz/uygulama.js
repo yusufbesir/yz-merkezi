@@ -94,9 +94,41 @@ function kullanilabilir(s) {
   return s && (!s.anahtar_gerekli || s.anahtar_kaynagi);
 }
 
-function kaydet() {
-  const veri = durum.pencereler.map(({ id, saglayici, model, gecmis, gonderilsin }) => ({ id, saglayici, model, gecmis, gonderilsin }));
-  try { localStorage.setItem(KAYIT_ANAHTARI, JSON.stringify(veri)); } catch { /* depolama kapalıysa sessizce geç */ }
+// Geçmiş localStorage'a MASKESİZ yazılmaz: metinler önce sunucunun /api/maskele ucundan (hassas kuralları orada)
+// geçer. Maskeleme başarısız olursa hiçbir şey kaydedilmez ve kullanıcıya bildirilir.
+const maskeOnbellek = new Map();   // özgün metin -> maskeli metin (aynı metin tekrar sorulmaz)
+let kayitSirasi = 0;
+
+async function maskele(metinler) {
+  const eksik = [...new Set(metinler.filter((m) => typeof m === "string" && m && !maskeOnbellek.has(m)))];
+  for (let i = 0; i < eksik.length; i += 200) {
+    const parca = eksik.slice(i, i + 200);
+    const yanit = await api("/api/maskele", { metinler: parca });
+    if (!Array.isArray(yanit?.metinler) || yanit.metinler.length !== parca.length) throw new Error("maskeleme yanıtı geçersiz");
+    parca.forEach((m, k) => maskeOnbellek.set(m, yanit.metinler[k]));
+  }
+  return (m) => (typeof m === "string" && m ? maskeOnbellek.get(m) : m);
+}
+
+async function kaydet() {
+  const sira = ++kayitSirasi;
+  const pencereler = durum.pencereler.map(({ id, saglayici, model, gecmis, gonderilsin }) => (
+    { id, saglayici, model, gonderilsin, gecmis: gecmis.map((m) => ({ ...m })) }));
+  try {
+    const ham = pencereler.flatMap((p) => p.gecmis.flatMap((m) => [m.icerik, m.hata]));
+    const maskeli = await maskele(ham);
+    for (const p of pencereler) {
+      for (const m of p.gecmis) {
+        if (m.icerik) m.icerik = maskeli(m.icerik);
+        if (m.hata) m.hata = maskeli(m.hata);
+      }
+    }
+    if (sira !== kayitSirasi) return;   // daha yeni bir kayıt başladı; eski anlık görüntü onun üzerine yazılmasın
+    localStorage.setItem(KAYIT_ANAHTARI, JSON.stringify(pencereler));
+  } catch (h) {
+    if (h instanceof DOMException) return;   // depolama kapalı/dolu: sessizce geç
+    durum.pencereler.forEach((p) => durumYaz(p, `Geçmiş kaydedilemedi (maskeleme başarısız): ${h.message}`, true));
+  }
 }
 
 function yukle() {

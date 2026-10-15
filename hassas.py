@@ -32,6 +32,7 @@ ACIKLAMALAR = {
 ENTROPI_ESIGI = 4.5        # bit/karakter: base64 benzeri dizeler için
 HEX_ENTROPI_ESIGI = 3.5    # bit/karakter: onaltılık dizelerin en yüksek entropisi 4'tür
 ENTROPI_EN_AZ = 32         # karakter
+GIRDI_SINIRI = 100_000     # karakter: taranan metnin üst sınırı (kötü niyetli uzun girdide süreyi sınırlar)
 
 _SOL = r"(?<![A-Za-z0-9_])"  # kalıp başka bir sözcüğün ortasında başlamasın
 _SAG = r"(?![A-Za-z0-9_])"
@@ -67,7 +68,7 @@ _API_KALIPLARI = [
 _BAGLANTI_KALIPLARI = [
     _k(r"(?i)(?<![A-Za-z0-9+])(?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|redis|rediss|amqps?|mssql|sqlserver)"
        r"://[^\s:/@]+:(?P<deger>[^\s@/]+)@"),
-    _k(r"(?i)(?:Server|Data Source|Host|Address)[ \t]*=[^;\n]+;[^\n]*?(?:Password|Pwd)[ \t]*=[ \t]*(?P<deger>[^;\s]+)"),
+    _k(r"(?i)(?:Server|Data Source|Host|Address)[ \t]{0,8}=[^;\n]{1,200};[^\n]{0,200}?(?:Password|Pwd)[ \t]{0,8}=[ \t]{0,8}(?P<deger>[^;\s]{1,128})"),
 ]
 
 # ---- IBAN (TR + 2 kontrol hanesi + 22 hane, 4'lü gruplar boşluklu ya da bitişik)
@@ -79,20 +80,22 @@ _KART = _k(r"(?<!\d)(?:\d{4}[ -]?){3}\d{4}(?!\d)")
 
 # ---- parola: "parola|şifre|password|pin" + [:=] + değer (aynı satırda)
 _PAROLA_ANAHTARI = r"(?:(?:parola|[sşSŞ][iİıI]fre|password|passwd|pwd)[a-zA-ZçğıöşüÇĞİÖŞÜ]{0,6}|pin)"
-_PAROLA = _k(_SOL + _PAROLA_ANAHTARI + r"[ \t]*[:=][ \t]*[\"']?(?P<deger>[^\s\"',;]{3,})", re.IGNORECASE)
+_PAROLA = _k(_SOL + _PAROLA_ANAHTARI + r"[ \t]{0,8}[:=][ \t]{0,8}[\"']?(?P<deger>[^\s\"',;]{3,128})", re.IGNORECASE)
 
 # ---- e-posta + parola çifti: "kisi@ornek.com:Parola123!" ya da "kisi@ornek.com / Parola123!"
+# Geri izleme yaratmamak için her niceleyici sınırlıdır (yerel kısım {1,64}, alan adı etiketleri {1,63} x en çok 8).
 _EPOSTA_PAROLA = _k(
-    r"(?<![\w.+-])[\w.+-]+@[\w-]+(?:\.[\w-]+)+[ \t]*[:|/;,][ \t]*"
-    r"(?=\S*[A-Za-z])(?=\S*[\d!@#$%^&*?])(?![\w.+-]+@)(?!https?:)(?P<deger>[^\s\"',;]{6,})"
+    r"(?<![\w.+-])[\w.+-]{1,64}@[\w-]{1,63}(?:\.[\w-]{1,63}){1,8}[ \t]{0,8}[:|/;,][ \t]{0,8}"
+    r"(?=\S{0,128}[A-Za-z])(?=\S{0,128}[\d!@#$%^&*?])(?![\w.+-]{1,64}@)(?!https?:)(?P<deger>[^\s\"',;]{6,128})"
 )
 
 # ---- kişisel (düşük önem): Türk cep telefonu ve e-posta adresi
 _TELEFON = _k(r"(?<![\d+])(?:\+90[ \t]?|0)?5\d{2}[ \t]?\d{3}[ \t]?\d{2}[ \t]?\d{2}(?!\d)")
-_EPOSTA = _k(r"(?<![\w.+-])[\w.+-]+@[\w-]+(?:\.[\w-]+)*\.[A-Za-z]{2,}(?![\w-])")
+_EPOSTA = _k(r"(?<![\w.+-])[\w.+-]{1,64}@[\w-]{1,63}(?:\.[\w-]{1,63}){0,8}\.[A-Za-z]{2,63}(?![\w-])")
 
-# ---- yalnız uyarı: yüksek entropili uzun dizeler (URL'ler önce dışarıda bırakılır)
-_URL = _k(r"(?i)\b(?:https?|ftp)://[^\s<>\"']+")
+# ---- yalnız uyarı: yüksek entropili uzun dizeler. URL'nin şema/ana makine/yol kısmı taramadan muaftır; sorgu ve
+# parça kısmı (?token=..., &key=...) MUAF DEĞİLDİR: oradaki değerler de taranır.
+_URL = _k(r"(?i)\b(?:https?|ftp)://[^\s<>\"'?#]+")
 _ENTROPI_ADAYI = _k(r"(?<![A-Za-z0-9+/=_-])[A-Za-z0-9+/=_-]{%d,}(?![A-Za-z0-9+/=_-])" % ENTROPI_EN_AZ)
 
 _ENGEL = "\x00"
@@ -187,18 +190,22 @@ def tara(metin):
     """Metni tarar. Döner: {"kategori", "eslesme_sayisi", "ornek", "kategoriler", "onem"}.
 
     kategori: KATEGORILER'den biri ya da "yok"; eslesme_sayisi seçilen kategorideki eşleşmelerin adedi; ornek ilk
-    eşleşmenin maskeli hâli (hiç yoksa ""); kategoriler bulunan tüm kategoriler; onem "yuksek" | "dusuk" | None.
+    eşleşmenin maskeli hâli (hiç yoksa ""); kategoriler bulunan tüm kategoriler; onem "yuksek" | "dusuk" | None;
+    kirpildi metin GIRDI_SINIRI'ndan uzunsa yalnızca ilk GIRDI_SINIRI karakter taranmıştır (True).
     """
     bulunanlar = {k: [] for k in KATEGORILER}
-    for kategori, parca, _ in _eslesmeler(metin):
+    metin = str(metin or "")
+    kirpildi = len(metin) > GIRDI_SINIRI
+    for kategori, parca, _ in _eslesmeler(metin[:GIRDI_SINIRI]):
         bulunanlar[kategori].append(parca)
     bulunan_kategoriler = [k for k in KATEGORILER if bulunanlar[k]]
     if not bulunan_kategoriler:
-        return {"kategori": "yok", "eslesme_sayisi": 0, "ornek": "", "kategoriler": [], "onem": None}
+        return {"kategori": "yok", "eslesme_sayisi": 0, "ornek": "", "kategoriler": [], "onem": None,
+                "kirpildi": kirpildi}
     secilen = bulunan_kategoriler[0]
     return {"kategori": secilen, "eslesme_sayisi": len(bulunanlar[secilen]),
             "ornek": ornek_maskele(bulunanlar[secilen][0]), "kategoriler": bulunan_kategoriler,
-            "onem": "yuksek" if secilen in YUKSEK else "dusuk"}
+            "onem": "yuksek" if secilen in YUKSEK else "dusuk", "kirpildi": kirpildi}
 
 
 def onay_gerekli_mi(sonuc):
@@ -218,6 +225,8 @@ def maskele(metin):
     E-posta ve telefon (kişisel, düşük önem) maskelenmez.
     """
     metin = str(metin or "")
+    if len(metin) > GIRDI_SINIRI:   # uzun metin parça parça maskelenir; her parça doğrusal sürede taranır
+        return "".join(maskele(metin[i:i + GIRDI_SINIRI]) for i in range(0, len(metin), GIRDI_SINIRI))
     araliklar = sorted((a, k) for k, _, a in _eslesmeler(metin) if k in MASKELENEN)
     parcalar, son = [], 0
     for (bas, bit), kategori in araliklar:
