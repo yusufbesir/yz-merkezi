@@ -14,7 +14,10 @@ Güncelleme: 2026-10-15 20:52 (TR)
 - 21:20 Ajan U bitti: /api/sor akışı, yeni yönlendirme biçimi, tek asistan arayüzü; 498 test (sahte motorlarla). Ekran görüntüleri scratchpad'de tek-asistan*.png.
 - 21:22 Doğrulama ajanı başlatıldı (gerçek motorlar paketiyle uyum).
 
-## Sıradaki adımlar
+- 21:40 Doğrulama GEÇTİ (iptal olayı düzeltildi); commit f2a82a5 iki hesaba gönderildi; uygulama yeni kodla yeniden başlatıldı; oturum notu kasaya yazıldı.
+- DURUM: İş tamamlandı. Kalan: kullanıcı Claude ve Gemini girişi; sonra onayla gerçek motor denemesi.
+
+## Sıradaki adımlar (tamamlandı; yalnızca kullanıcı girişi bekleniyor)
 1. M ve U raporlarını al; `motorlar/BENIOKU-motorlar.md`'yi BENIOKU'ya birleştir.
 2. Doğrulama ajanı (Sonnet): tam suit, sahte motorlarla akış, gerçek motorlarda yalnızca `hazir_mi()`.
 3. Commit + iki hesaba push (yedekle kalıbı: yusufbesir origin, yonkoakira yedek).
