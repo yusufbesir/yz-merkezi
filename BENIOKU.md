@@ -1,11 +1,55 @@
 # Yapay Zeka Merkezi
 
-GPT, Gemini, Claude ve bilgisayarındaki yerel modelleri tek ekranda, yan yana kullanmanı sağlayan Türkçe uygulama. Bir mesaj yazarsın, işaretli bütün pencerelere aynı anda gider ve yanıtları karşılaştırırsın.
+Tek bir yapay zeka gibi çalışan Türkçe masaüstü uygulaması. Bir mesaj yazarsın; uygulama her mesaj için en uygun motoru (Claude, Codex/ChatGPT ya da Gemini) kendisi seçer ve yanıtı tek bir akışta gösterir. Hiçbir başka uygulamaya ya da pencereye mesaj göndermez.
 
 İki sürümü var:
 
-1. **Masaüstü sürümü (`baslat.bat`)**: ChatGPT, Gemini ve Claude web sitelerini kendi tarayıcı profilinde açıp birleştirir (bilgisayarda kurulu masaüstü programları yedek yol). API anahtarı gerekmez, kendi hesapların ve aboneliklerin kullanılır.
+1. **Masaüstü sürümü (`baslat.bat`)**: varsayılan kip **Tek Asistan**'dır (aşağıda). Eski çoklu pencere yöntemi (ChatGPT, Gemini ve Claude web siteleri ve masaüstü programları) **Ayarlar → Gelişmiş** altına taşındı; kod silinmedi.
 2. **API sürümü (`baslat-api.bat`)**: tarayıcıda çalışır, API anahtarlarıyla bağlanır.
+
+## Tek Asistan (varsayılan kip)
+
+`baslat.bat` ile açılan pencerede tek bir sohbet vardır:
+
+- **Motorlar**: bu bilgisayarda kurulu üç komut satırı aracı (Claude, Codex, Gemini) arka planda `motorlar/` paketi üzerinden çalıştırılır. Her biri kendi hesabınla bir kez giriş yapılarak kullanılır; bu uygulamaya parola ya da API anahtarı yazılmaz. Kenar çubuğunun altındaki **Motorlar** bölümünde her motor için durum noktası görünür: **Hazır** (yeşil), **Giriş gerekli** (turuncu), **Kurulu değil** (gri). Birine tıklayınca ne yapman gerektiğini anlatan not açılır (kurulum ve giriş komutları, Kopyala düğmeli, ve "Yeniden denetle").
+- **Sohbet**: senin mesajların sağda, asistan yanıtı solda. Yanıtın üstünde küçük bir rozet hangi motorun ve modelin yanıtladığını gösterir ("Claude · Sonnet 5.5"; rozetin üstüne gelince seçim sebebi). Yanıt parça parça akar, "durum" mesajları rozetin altında solgun tek satır olarak görünür ("Gemini hazır değil, Claude ile devam ediyorum"). Markdown (başlık, kalın/italik, liste, tablo, alıntı, kod bloğu + Kopyala) güvenli DOM ile çizilir. Oto-kaydırma yalnızca en alttayken olur; yukarıdaysan "↓" düğmesi çıkar. `prefers-reduced-motion` tercihi saygı görür.
+- **Yazı kutusu**: soldaki **Otomatik ▾** seçici (Otomatik / Claude / Codex / Gemini; seçim ayarlara kaydedilir), sağda gönder oku; yanıt sürerken **Durdur** (kare) düğmesi ya da `Esc`. Yanıtın altında **Yeniden sor ▾**: aynı soruyu başka motora sorar (son soru-yanıt çiftinin yerine geçer).
+- **Hassas bilgi uyarısı**, **Hafıza OS bağlamı** ve **Jev** aynen çalışır (aşağıdaki bölümlere bak); hassas bilgi bulunursa gönderilmeden önce şerit çıkar ("Yine de gönder / Vazgeç").
+- **Süreklilik**: aynı motorla devam edince motorun kendi oturumu kullanılır. Motor değişirse (ya da motorun oturumu yoksa) son 6 mesajın kısa transkripti istemin başına "Önceki konuşma özeti" olarak eklenir.
+- **Yedek motor**: seçilen/önerilen motor hazır değilse sıradaki uygun motora geçilir.
+
+### Motor seçimi (yönlendirici)
+
+`POST /api/sor` her mesajı sınıflandırır (tür: kod, çeviri, özet, araştırma, yazı, matematik, sohbet; zorluk: basit, orta, zor; Jev açık ve hazırsa Jev ile, değilse kurallarla; hassas metin Jev'e gitmez) ve `yonlendirme.json` tercih sırasındaki **ilk hazır motoru** seçer. Başlangıç değerleri: basit → hızlı sınıf (Gemini › Codex › Claude); orta → dengeli (Claude › Codex › Gemini); zor → güçlü (Claude › Codex › Gemini); kod her zorlukta önce Claude; çeviri ve özet önce Gemini hızlı; zor araştırma önce Gemini güçlü. Model adı `motorlar` paketinin `modeller()` listesinden sınıfa göre seçilir; **Ayarlar → Motorlar**'da sınıf başına tercih edilen model seçilebilir (`motor_modelleri` ayarı).
+
+`yonlendirme.json` biçimi (eski `site`/`model_icerir` biçimi geçersiz sayılır, yerleşik varsayılana düşülür ve Ayarlar → Yönlendirme'de uyarı çıkar):
+
+```
+{
+  "varsayilan": {"basit": [TERCIH, ...], "orta": [...], "zor": [...]},
+  "turler": {"kod": {"basit": [...], "orta": [...], "zor": [...]}, "ceviri": {"hepsi": [...]}}
+}
+TERCIH = {"motor": "claude" | "codex" | "gemini", "sinif": "hizli" | "dengeli" | "guclu"}
+```
+Aranış: `turler[tür][zorluk]` → `turler[tür]["hepsi"]` → `varsayilan[zorluk]`. `_` ile başlayan anahtarlar yok sayılır; geçersiz bölümler yerleşik varsayılana düşer. `YZ_YONLENDIRME` ortam değişkeni dosya yolunu değiştirir.
+
+### Sunucu uçları (Tek Asistan)
+
+- `POST /api/sor` `{metin, sohbet?, motor?: "otomatik"|"claude"|"codex"|"gemini", model?, onayli?, yeniden?}` → NDJSON akışı (satır başına bir JSON). Sıra: hassas bilgi varsa **tek** `{"tur":"onay_gerekli",...}` olayı ve biter; yoksa `{"tur":"secim","sohbet","motor","motor_ad","renk","model","model_ad","sinif","sebep","kaynak": "jev"|"kural"|"kullanici","yedek"}`, (yedek motor için) `{"tur":"durum","metin"}`, motorun olayları aynen (`baslangic`, `parca`, `durum`, `bitti`, `hata`), sonda `{"tur":"kayit","sohbet","mesaj_sira"}`. Doğrulama hataları akış başlamadan HTTP 400 olur. Kullanıcı mesajı akış başlamadan, asistan mesajı (hata ve durdurulmuş yanıt dahil) akış sonunda `{"rol":"asistan","metin","motor","model","sure"}` olarak yerel geçmişe yazılır; bağlantı kopsa da kısmi yanıt saklanır. Sohbet kaydında `motor_oturumlari: {motor: oturum}` tutulur.
+- `POST /api/durdur` `{sohbet}` → süren yanıtı iptal eder (iptal olayı motora geçer).
+- `GET /api/durum` → `motorlar: [{id, ad, renk, hazir, sebep, giris, surum}]` (60 sn önbellek; `?motor_yenile=1` önbelleği atlar). Hazır değilse `sebep` giriş talimatını içerir. `motorlar` paketi yüklenemezse üç motor "Motorlar hazır değil" sebebiyle hazır değil görünür; uygulama kırılmaz.
+- `GET /api/motor-modelleri` → `{motor: [{id, ad, sinif}]}`; `POST /api/oneri` `{metin}` → tür, zorluk, kaynak ve her öneride motor, sınıf, `hazir`, `model`/`model_ad`; `GET /api/yonlendirme` → kural tablosu, dosya yolu, son sınıflandırma.
+- Ayarlar: `varsayilan_motor` ("otomatik" ya da motor kimliği), `motor_modelleri` (`{motor: {sinif: model kimliği}}`).
+
+### Ayarlar sekmeleri
+
+Genel, Görünüm, **Motorlar** (durum, giriş talimatları, tercih edilen modeller), **Yönlendirme** (tablo, yeni biçim), Hafıza, Jev, **Gelişmiş** (eski Hesaplar (web) / Programlar / Hepsini aç / Yan yana diz, "Enter'a da bas", yerleşim, "Yanıtları Jev ile puanla" ve çoklu pencereye gönder), Kısayollar, Hakkında. Kısayollar: Enter gönder, Shift+Enter yeni satır, Ctrl+Shift+O yeni sohbet, Ctrl+B kenar çubuğu, Ctrl+K sohbet ara, Ctrl+, ayarlar, Esc yanıtı durdur.
+
+Yanıt puanlama (Jev ile en iyi yanıtı seçme) tek motorda anlamsız olduğundan yalnızca Gelişmiş'teki çoklu pencere gönderiminde kullanılır.
+
+## Gelişmiş: çoklu pencere yöntemi (eski)
+
+Aşağıdaki anlatım Ayarlar → Gelişmiş altındaki eski yöntemi ve sunucu uçlarını (`/api/gonder`, `/api/yanit`, `/api/site-ac`, ...) anlatır; Tek Asistan bunları kullanmaz.
 
 ## Masaüstü sürümü
 
@@ -63,7 +107,9 @@ Gönder'e basınca (Enter ya da ok) mesaj, siteye gitmeden önce taranır. Şu k
 
 Bir şey bulunursa mesaj **gönderilmez** ve yazı kutusunun üstünde bir şerit çıkar: "Bu mesaj <bir API anahtarı / bir parola / bir T.C. kimlik numarası / bir IBAN ya da kart numarası> içeriyor olabilir. **Yine de gönder** / **Vazgeç**". "Yine de gönder" aynı mesajı `onayli: true` ile yeniden yollar; şerit görünürken metni değiştirirsen şerit kapanır ve yeni metin yeniden denetlenir. Birden çok kategori varsa şu öncelik kullanılır: API anahtarı, parola, kimlik, finansal. Sunucu (`POST /api/gonder`) uyarı gerekiyorsa hiçbir yere yazmadan `{"onay_gerekli": true, "kategori", "aciklama"}` döndürür (HTTP 200). Anahtar: **Ayarlar → Genel → "Göndermeden önce hassas bilgi uyarısı"** (varsayılan açık). Tarama bir güvenlik ağıdır, kusursuz değildir: kalıba uymayan bir sırrı (örneğin kelimelerle yazılmış bir parolayı) yakalayamaz.
 
-### Ajan seçimi (yönlendirici)
+### Ajan seçimi (yönlendirici, eski site kipi)
+
+> Not: bu bölüm ve "Kuralları düzenleme" eski `site`/`model_icerir` biçimini anlatır. Güncel biçim ve Tek Asistan davranışı yukarıdaki "Motor seçimi" bölümündedir.
 
 Yazarken (600 ms duraklayınca) mesaj kurallarla sınıflandırılır ve yazı kutusunun üstünde bir öneri şeridi çıkar: "Önerilen: Gemini · <model> (basit · araştırma) — **Uygula** / **Değiştir**".
 - **Tür**: `kod` (kod bloğu ya da fonksiyon/hata/python/javascript/sql), `ceviri` (çevir/translate/ingilizce/türkçeye), `ozet` (özetle/kısaca), `arastirma` (araştır/karşılaştır/kaynak/neden), `yazi` (yaz/taslak/mail/makale), `matematik` (sayısal ifade ya da denklem), değilse `sohbet`. Birden çok kural uyarsa bu sıradaki ilki kazanır.
@@ -176,9 +222,149 @@ Veri akışı:
 
 Testler gerçek kasaya dokunmaz: `testler/_ortam.py` `YZ_KASA`'yı var olmayan geçici bir yola yönlendirir, `test_hafiza_kopru.py` geçici bir kasa ve sahte `araclar/hafiza.py` kurar.
 
+## Motorlar (ayrıntı)
+
+### Özet
+
+`motorlar/` paketi, uygulamanın tek pencerede "tek yapay zeka gibi" çalışmasını sağlar. Claude Code, Codex CLI
+ve Gemini CLI arka planda, **kullanıcının kendi hesabıyla** ve **pencere açmadan** (`CREATE_NO_WINDOW`)
+çalıştırılır. Yanıt satır satır okunup olay olarak akıtılır. Yalnızca standart kütüphane kullanılır. Testler
+sahte motorlarla çalışır, gerçek CLI'lara istem göndermez.
+
+### Arayüz
+
+```python
+from motorlar import MOTORLAR, motor, MotorHatasi
+m = motor("claude")          # "claude" | "codex" | "gemini"
+m.hazir_mi()                 # {"hazir": bool, "sebep": str, "surum": str|None, "giris": bool|None}  (60 sn önbellek)
+m.modeller()                 # [{"id", "ad", "sinif": "hizli"|"dengeli"|"guclu"}]
+for olay in m.sor(istem, oturum=None, model=None, sistem=None, calisma_klasoru=None, iptal=threading.Event()):
+    ...
+```
+
+Olaylar (sırayla):
+
+| tur | alanlar | not |
+|---|---|---|
+| `durum` | `metin` | İlk olay her zaman `"düşünüyor…"`. Arka arkaya gelen aynı durum bastırılır. |
+| `baslangic` | `oturum` | Tam bir kez, ilk `parca`dan önce gelir. |
+| `parca` | `metin` | Yanıt parçası. |
+| `bitti` | `oturum`, `metin` (tam yanıt), `model`, `sure` (sn) | Başarılı bitiş. |
+| `hata` | `mesaj` (Türkçe) | İptalde ayrıca `iptal: True`. Gemini girişi yoksa ayrıca `giris_gerekli: True`. |
+
+- `oturum`: motorun kendi oturum kimliğidir (Claude `session_id`, Codex `thread_id`, Gemini `session_id`).
+  Sonraki `sor(..., oturum=...)` çağrısında aynı konuşma sürdürülür. Kimlik alınamazsa `None` döner. O durumda
+  sunucu geçmişi istemin içinde göndermelidir.
+- **Zaman aşımı:** ilk çıktı satırı için 60 sn, toplam süre için 600 sn. Örnekteki `ilk_bayt_zaman_asimi` ve
+  `toplam_zaman_asimi` öznitelikleriyle değiştirilebilir.
+- **İptal:** `iptal` olayı kurulunca süreç ağacı durdurulur (Windows'ta `taskkill /T /F`, sonra `terminate`).
+  Generator erken kapatıldığında (`close()`, çöp toplama) da süreç durdurulur.
+- **Hata mesajı:** stderr toplanır. Süreç yanıtı tamamlamadan biterse ilk 300 karakteri mesaja eklenir.
+- **Girdi:** İstem komut satırına değil **standart girdiye** yazılır. Böylece uzun geçmiş ve `& | % "` gibi özel
+  karakterler güvenle geçer.
+- **Kodlama:** Alt süreç `encoding="utf-8", errors="replace"` ile okunur.
+- **Çalışma klasörü:** varsayılan `%LOCALAPPDATA%\YZMerkezi\calisma` (`guvenlik.veri_yolu`). `YZ_MOTOR_CALISMA`
+  ile değiştirilebilir, klasör yoksa oluşturulur.
+- **Yürütülebilir dosya:** `YZ_MOTOR_CLAUDE_EXE`, `YZ_MOTOR_CODEX_EXE`, `YZ_MOTOR_GEMINI_EXE` ile değiştirilebilir.
+  `.py` bu Python ile, `.js` node ile çalıştırılır. `.cmd`/`.bat` reddedilir, çünkü kullanıcı metni cmd.exe'den
+  geçmemelidir.
+
+### Claude Code
+
+- **Gereksinim:** Claude Code (`%USERPROFILE%\.local\bin\claude.exe`, yoksa PATH). Denenen sürüm: 2.1.296.
+- **Giriş:** Terminalde `claude` çalıştırıp `/login` ile ya da `claude auth login` ile giriş yapılır.
+  `hazir_mi()`, `claude auth status` JSON'undaki `loggedIn` değerine bakar.
+- **Komut:**
+  `claude -p --output-format stream-json --verbose --include-partial-messages --permission-mode dontAsk --strict-mcp-config --setting-sources project,local [--model M] [--resume OTURUM] --append-system-prompt "<sistem>" --tools ""`
+- **Ayrıştırma:**
+  - `system/init` olayından `session_id` ve model alınır.
+  - `stream_event` → `content_block_delta/text_delta` olayları parça olur. `thinking_delta` durum olarak işlenir.
+  - `assistant` iletisi yalnızca kısmi parça gelmediyse kullanılır.
+  - `result` olayından tam metin ve oturum alınır. `is_error` hata olarak işlenir.
+- **Sınırlar:**
+  - `--bare` kullanılmaz, çünkü abonelik girişini okumaz.
+  - Araçlar kapalıdır (`--tools ""`) ve MCP sunucuları yüklenmez.
+  - Kullanıcı ayarları (`~/.claude/settings.json`) yüklenmez, böylece kancalar (hook) sohbet sırasında çalışmaz.
+    Bu bilinçli bir seçimdir: `AYAR_KAYNAKLARI`.
+  - `ANTHROPIC_API_KEY` ortamda tanımlıysa Claude Code aboneliği değil API anahtarını (ücretli) kullanabilir.
+  - Model takma adları: `haiku` (hızlı), `sonnet` (dengeli), `opus` (güçlü).
+
+### Codex CLI
+
+- **Gereksinim:** `%LOCALAPPDATA%\OpenAI\Codex\bin\*\codex.exe` dosyalarından değiştirilme zamanı en yeni olan.
+  Bulunamazsa PATH'teki `codex.exe` kullanılır. Denenen sürüm: 0.162.0-alpha.17.2.
+- **Giriş:** `codex login` (ChatGPT hesabı). `hazir_mi()`, `codex login status` çıktısına bakar.
+- **Komut:**
+  - Yeni konuşma: `codex exec --json --skip-git-repo-check --sandbox read-only [-m M] -`
+  - Devam: `codex exec resume --json --skip-git-repo-check -c sandbox_mode="read-only" [-m M] THREAD_ID -`
+  - `exec resume` alt komutunda `--sandbox` seçeneği olmadığı için aynı ayar `-c` ile verilir. Bu, `--help` ile
+    doğrulandı.
+- **Ayrıştırma:**
+  - `thread.started` olayından oturum alınır.
+  - `item.*` içindeki `agent_message` metni artımlı olarak parçaya dönüşür. Birden çok ileti boş satırla ayrılır.
+  - `reasoning` "düşünüyor…" durumu olur. Komut, MCP, web ve dosya öğeleri "araç kullanıyor…" durumu olur.
+  - `turn.completed` bitiş, `turn.failed` hata demektir.
+  - `error` olayları geçici olabileceği için (yeniden bağlanma) yalnızca uyarı olarak işlenir. Tur tamamlanmazsa
+    hata mesajı olur.
+- **Sistem istemi:** Codex'te sistem istemi bayrağı yoktur. Talimat istemin başına `[Talimat]…[/Talimat]` olarak eklenir.
+- **Modeller:** Codex'in kendi önbelleğinden (`~/.codex/models_cache.json`, `visibility=list`) okunur. Sınıf,
+  açıklamadaki "fast/affordable" → hızlı, "frontier" → güçlü kuralıyla belirlenir. Önbellek okunamazsa sabit liste
+  kullanılır: gpt-6-luna, gpt-6.1-sol, gpt-6-astra. Olaylarda model adı olmadığı için `bitti.model`,
+  `config.toml` içindeki varsayılan modeldir.
+
+### Gemini CLI
+
+- **Gereksinim:** `npm install -g @google/gemini-cli` (bu makinede kuruldu: 0.64.0, npm öneki `D:\n8n\nodejs`).
+  Doğrudan `node.exe` + `node_modules\@google\gemini-cli\bundle\gemini.js` çalıştırılır, `gemini.cmd` çağrılmaz.
+- **Giriş:** Terminalde `gemini` çalıştırılıp Google hesabıyla (tarayıcı OAuth) giriş yapılır. Uygulama bunu
+  kendisi yapmaz. `hazir_mi()` ağa çıkmadan şunlara bakar:
+  - `~/.gemini/oauth_creds.json` ya da `gemini-credentials.json` dosyası,
+  - ya da `GEMINI_API_KEY`/`GOOGLE_API_KEY` ortam değişkeni.
+
+  Giriş yoksa `sor()` hiç süreç başlatmaz ve "Giriş gerekli: terminalde `gemini` çalıştırıp Google hesabınla giriş
+  yap." hatasını döndürür. Böylece başsız OAuth akışı bir tarayıcı penceresi açmaz.
+- **Komut:** İstem standart girdiden verilir. stdin/stdout boru olduğu için CLI başsız çalışır, `-p` gerekmez.
+  `gemini.js --output-format stream-json --skip-trust --approval-mode default [-m M] [--resume OTURUM]`
+- **Ortam değişkenleri:**
+  - `GEMINI_CLI_TRUST_WORKSPACE=true`: güvenilmeyen klasörde başsız çalışma reddini önler.
+  - `NO_BROWSER=true`: tarayıcı açılmaz.
+  - `GEMINI_CLI_NO_RELAUNCH=true`: ikinci bir node süreci açılmaz, iptal temiz olur.
+- **Güvenilir klasör:** `--skip-trust` ve `GEMINI_CLI_TRUST_WORKSPACE=true` birlikte kullanılır. Bu seçenekler
+  CLI'nin "trusted directory" hata metninde önerilir.
+- **Ayrıştırma:** stream-json şeması 0.64.0 paket kaynağından doğrulandı.
+  - `init{session_id, model}`
+  - `message{role:"assistant", content, delta:true}` → parça
+  - `tool_use`/`tool_result` → durum
+  - `error{severity, message}`
+  - `result{status:"success"|"error", error?, stats}`
+- **Oturum:** `--resume` tam UUID kabul eder (paket kaynağında doğrulandı). Oturumlar çalışma klasörü (proje)
+  başına saklanır. Devam ettirmek için aynı `calisma_klasoru` kullanılmalıdır.
+- **Sınırlar:**
+  - `--approval-mode default` kullanılır, `--yolo` yoktur. Başsız modda onay gerektiren araçlar çalışmaz.
+  - Sistem istemi bayrağı yoktur, talimat istemin başına eklenir.
+  - Model listesi sabittir: gemini-2.5-flash-lite, gemini-2.5-flash, gemini-2.5-pro.
+- **Çıkış kodları:** 41 → giriş gerekli, 42 → geçersiz girdi, 55 ya da "trusted directory" → güven hatası.
+
+### Testler
+
+`testler/test_motorlar.py` dosyası `testler/sahte_motorlar/` altındaki sahte betikleri kullanır. Bu betikler
+gerçek JSONL/stream-json biçimini basar. Senaryo, istemdeki anahtar sözcükle seçilir:
+
+| Anahtar sözcük | Davranış |
+|---|---|
+| `HATA` | Motorun hata olayı |
+| `COKME` | stderr'e yazar ve tamamlanmadan çıkar |
+| `SESSIZ` | Hiç çıktı vermez (ilk bayt zaman aşımı) |
+| `YAVAS` | Yavaş akış (iptal ve toplam zaman aşımı) |
+
+Gerçek CLI'larda yalnızca `--version` ve giriş durumu denetlenir. İstem göndermek ücret ve kota harcadığı için
+kullanıcı onayı gerekir.
+
 ## Klasör yapısı
 
-- `masaustu_sunucu.py`: masaüstü sürümünün arka ucu (site durumu, sohbet listesi, gönderme, yanıt okuma, dizme; yedek olarak masaüstü programları)
+- `motorlar/`: Claude, Codex ve Gemini komut satırı araçlarını saran motor paketi (`MOTORLAR`, `motor(id)`; `hazir_mi`, `modeller`, `sor`); Tek Asistan bunları çağırır
+- `arayuz-masaustu/markdown.js` (güvenli Markdown → DOM), `uygulama.js` (Tek Asistan arayüzü), `gelismis.js` (eski çoklu pencere bölümü)
+- `masaustu_sunucu.py`: masaüstü sürümünün arka ucu (Tek Asistan: `/api/sor`, `/api/durdur`, motor durumları; eski site/program uçları) (site durumu, sohbet listesi, gönderme, yanıt okuma, dizme; yedek olarak masaüstü programları)
 - `arayuz-masaustu/`: masaüstü sürümünün Claude düzenindeki Türkçe arayüzü
 - `pencereler.py`: Windows pencerelerini bulma, dizme ve yazı gönderme
 - `tarayici.py`: Edge'i CDP borusuyla (ağ portu yok) ve ayrı profille (`%LOCALAPPDATA%\YZMerkezi\tarayici-profili`) başlatır; site sekmelerini bulur, pencere açar/dizer

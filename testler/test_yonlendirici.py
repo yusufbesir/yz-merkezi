@@ -1,4 +1,4 @@
-"""yonlendirici.py testleri: tür/zorluk sınıflandırma, yonlendirme.json yüklemesi, model eşleştirme."""
+"""yonlendirici.py testleri: tür/zorluk sınıflandırma, yonlendirme.json yüklemesi (motor + sınıf), model seçimi."""
 import json
 import sys
 import tempfile
@@ -107,20 +107,24 @@ class KuralDosyasiTesti(unittest.TestCase):
             for z in y.ZORLUKLAR:
                 with self.subTest(tur=tur, zorluk=z):
                     liste = y.tercihler(kurallar, tur, z)
-                    self.assertTrue(liste)
-                    self.assertTrue(all(t["site"] in y.SITELER and t["model_icerir"] for t in liste))
+                    self.assertEqual(len(liste), 3, "her sırada üç motor da var")
+                    self.assertEqual({t["motor"] for t in liste}, set(y.MOTORLAR))
+                    self.assertTrue(all(t["sinif"] in y.SINIFLAR for t in liste))
 
     def test_varsayilan_tercih_sirasi(self):
         k, _ = y.kurallari_yukle(y.KOK / "yonlendirme.json")
-        sira = lambda tur, z: [(t["site"], t["model_icerir"]) for t in y.tercihler(k, tur, z)]  # noqa: E731
-        self.assertEqual(sira("sohbet", "basit"), [("gemini", "flash"), ("chatgpt", "mini"), ("claude", "haiku")])
-        self.assertEqual(sira("sohbet", "orta"), [("claude", "sonnet"), ("chatgpt", "gpt"), ("gemini", "pro")])
-        self.assertEqual(sira("sohbet", "zor"), [("claude", "opus"), ("chatgpt", "pro"), ("gemini", "pro")])
+        sira = lambda tur, z: [(t["motor"], t["sinif"]) for t in y.tercihler(k, tur, z)]  # noqa: E731
+        # basit → hızlı sınıf: gemini › codex › claude
+        self.assertEqual(sira("sohbet", "basit"), [("gemini", "hizli"), ("codex", "hizli"), ("claude", "hizli")])
+        # orta → dengeli: claude › codex › gemini; zor → güçlü: claude › codex › gemini
+        self.assertEqual(sira("sohbet", "orta"), [("claude", "dengeli"), ("codex", "dengeli"), ("gemini", "dengeli")])
+        self.assertEqual(sira("sohbet", "zor"), [("claude", "guclu"), ("codex", "guclu"), ("gemini", "guclu")])
+        for z, sinif in (("basit", "hizli"), ("orta", "dengeli"), ("zor", "guclu")):
+            self.assertEqual(sira("kod", z)[0], ("claude", sinif), "kod: önce claude")
         for z in y.ZORLUKLAR:
-            self.assertEqual(sira("kod", z)[0][0], "claude", "kod: önce claude")
-            self.assertEqual(sira("ceviri", z)[0], ("gemini", "flash"))
-            self.assertEqual(sira("ozet", z)[0], ("gemini", "flash"))
-        self.assertEqual(sira("arastirma", "zor")[0], ("gemini", "pro"))
+            self.assertEqual(sira("ceviri", z)[0], ("gemini", "hizli"))
+            self.assertEqual(sira("ozet", z)[0], ("gemini", "hizli"))
+        self.assertEqual(sira("arastirma", "zor")[0], ("gemini", "guclu"))
         self.assertEqual(sira("arastirma", "basit"), sira("sohbet", "basit"))  # yalnızca zor için özel
 
     def test_dosya_yok_yerlesige_duser(self):
@@ -143,28 +147,36 @@ class KuralDosyasiTesti(unittest.TestCase):
 
     def test_gecersiz_bolumler_ayiklanir(self):
         ham = {
-            "varsayilan": {"basit": [{"site": "claude", "model_icerir": "haiku"}, {"site": "yok", "model_icerir": "x"},
-                                     {"site": "gemini"}, "metin", {"site": "chatgpt", "model_icerir": "  "}],
+            "varsayilan": {"basit": [{"motor": "claude", "sinif": "hizli"}, {"motor": "yok", "sinif": "hizli"},
+                                     {"motor": "gemini"}, "metin", {"motor": "codex", "sinif": "cok-hizli"},
+                                     {"site": "gemini", "model_icerir": "flash"}],     # eski biçim geçersiz sayılır
                            "orta": "liste degil"},
-            "turler": {"kod": {"zor": [{"site": "gemini", "model_icerir": "pro"}], "cok_zor": [], "orta": []},
+            "turler": {"kod": {"zor": [{"motor": "gemini", "sinif": "guclu"}], "cok_zor": [], "orta": []},
                        "bilinmeyen": {"hepsi": []}, "ozet": "x"},
         }
         k, uyarilar = y.kurallari_dogrula(ham)
-        self.assertEqual(k["varsayilan"]["basit"], [{"site": "claude", "model_icerir": "haiku"}])
+        self.assertEqual(k["varsayilan"]["basit"], [{"motor": "claude", "sinif": "hizli"}])
         self.assertEqual(k["varsayilan"]["orta"], y.YERLESIK["varsayilan"]["orta"])    # geçersiz: yerleşik
         self.assertEqual(k["varsayilan"]["zor"], y.YERLESIK["varsayilan"]["zor"])      # eksik: yerleşik
-        self.assertEqual(k["turler"], {"kod": {"zor": [{"site": "gemini", "model_icerir": "pro"}]}})
+        self.assertEqual(k["turler"], {"kod": {"zor": [{"motor": "gemini", "sinif": "guclu"}]}})
         self.assertGreaterEqual(len(uyarilar), 5)
+
+    def test_tamamen_eski_biçim_yerlesige_duser(self):
+        eski = {"varsayilan": {z: [{"site": "claude", "model_icerir": "sonnet"}] for z in y.ZORLUKLAR}}
+        k, uyarilar = y.kurallari_dogrula(eski)
+        self.assertEqual(k["varsayilan"], y.YERLESIK["varsayilan"])
+        self.assertEqual(len(uyarilar), 3)
 
     def test_ozel_dosya_etkili_olur(self):
         ozel = {"varsayilan": y.YERLESIK["varsayilan"],
-                "turler": {"sohbet": {"hepsi": [{"site": "chatgpt", "model_icerir": "Sonnet 5.5"}]}}}
+                "turler": {"sohbet": {"hepsi": [{"motor": "codex", "sinif": "guclu"}]}}}
         with tempfile.TemporaryDirectory() as klasor:
             dosya = Path(klasor) / "y.json"
             dosya.write_text(json.dumps(ozel), "utf-8")
             k, uyarilar = y.kurallari_yukle(dosya)
         self.assertEqual(uyarilar, [])
-        self.assertEqual(y.oner("selam", k)["oneriler"][0]["model_icerir"], "Sonnet 5.5")
+        o = y.oner("selam", k)["oneriler"][0]
+        self.assertEqual((o["motor"], o["sinif"]), ("codex", "guclu"))
 
     def test_tablo_21_satir(self):
         k, _ = y.kurallari_yukle(y.KOK / "yonlendirme.json")
@@ -172,7 +184,7 @@ class KuralDosyasiTesti(unittest.TestCase):
         self.assertEqual(len(t), len(y.TURLER) * len(y.ZORLUKLAR))
         satir = next(r for r in t if r["tur"] == "kod" and r["zorluk"] == "basit")
         self.assertEqual((satir["tur_ad"], satir["zorluk_ad"]), ("kod", "basit"))
-        self.assertEqual(satir["tercihler"][0]["site_ad"], "Claude")
+        self.assertEqual(satir["tercihler"][0], {"motor": "claude", "motor_ad": "Claude", "sinif": "hizli", "sinif_ad": "hızlı"})
 
 
 class OneriTesti(unittest.TestCase):
@@ -181,21 +193,55 @@ class OneriTesti(unittest.TestCase):
         o = y.oner("Bu makaleyi özetle", k)
         self.assertEqual((o["tur"], o["zorluk"], o["kaynak"]), ("ozet", "basit", "kural"))
         self.assertEqual((o["tur_ad"], o["zorluk_ad"]), ("özet", "basit"))
-        self.assertEqual([x["site"] for x in o["oneriler"]], ["gemini", "chatgpt", "claude"])
-        self.assertEqual(o["oneriler"][0]["model_icerir"], "flash")
-        self.assertEqual(o["oneriler"][0]["site_ad"], "Gemini")
+        self.assertEqual([x["motor"] for x in o["oneriler"]], ["gemini", "claude", "codex"])
+        self.assertEqual(o["oneriler"][0]["sinif"], "hizli")
+        self.assertEqual((o["oneriler"][0]["motor_ad"], o["oneriler"][0]["sinif_ad"]), ("Gemini", "hızlı"))
         self.assertIn("1. tercih", o["oneriler"][0]["sebep"])
         self.assertIn("özet", o["oneriler"][0]["sebep"])
-        self.assertNotIn("model", o["oneriler"][0], "model adı burada uydurulmaz; canlı menüden eşleştirilir")
+        self.assertNotIn("model", o["oneriler"][0], "model adı burada uydurulmaz; motorun listesinden seçilir")
 
-    def test_zor_arastirma_once_gemini_pro(self):
+    def test_zor_arastirma_once_gemini_guclu(self):
         k, _ = y.kurallari_yukle(y.KOK / "yonlendirme.json")
         o = y.oner("Elektrikli araçları kapsamlı karşılaştır. " + "a" * 300, k)
         self.assertEqual((o["tur"], o["zorluk"]), ("arastirma", "zor"))
-        self.assertEqual((o["oneriler"][0]["site"], o["oneriler"][0]["model_icerir"]), ("gemini", "pro"))
+        self.assertEqual((o["oneriler"][0]["motor"], o["oneriler"][0]["sinif"]), ("gemini", "guclu"))
+
+    def test_dis_siniflandirma_kullanilir_gecersizse_kurala_doner(self):
+        k, _ = y.kurallari_yukle(y.KOK / "yonlendirme.json")
+        o = y.oner("Bu makaleyi özetle", k, sinif={"tur": "kod", "zorluk": "zor"}, kaynak="jev")
+        self.assertEqual((o["tur"], o["zorluk"], o["kaynak"]), ("kod", "zor", "jev"))
+        self.assertEqual(o["oneriler"][0]["motor"], "claude")
+        o = y.oner("Bu makaleyi özetle", k, sinif={"tur": "yok", "zorluk": "zor"}, kaynak="jev")
+        self.assertEqual((o["tur"], o["kaynak"]), ("ozet", "kural"))
 
     def test_kural_verilmezse_dosyadan_yuklenir(self):
-        self.assertEqual(y.oner("Merhaba")["oneriler"][0]["site"], "gemini")
+        self.assertEqual(y.oner("Merhaba")["oneriler"][0]["motor"], "gemini")
+
+
+class ModelSecTesti(unittest.TestCase):
+    MODELLER = [{"id": "h", "ad": "Hızlı", "sinif": "hizli"}, {"id": "d1", "ad": "Dengeli 1", "sinif": "dengeli"},
+                {"id": "d2", "ad": "Dengeli 2", "sinif": "dengeli"}, {"id": "g", "ad": "Güçlü", "sinif": "guclu"}]
+
+    def test_sinifa_gore_ilk_model(self):
+        self.assertEqual(y.model_sec(self.MODELLER, "hizli")["id"], "h")
+        self.assertEqual(y.model_sec(self.MODELLER, "dengeli")["id"], "d1")
+        self.assertEqual(y.model_sec(self.MODELLER, "guclu")["id"], "g")
+
+    def test_tercih_edilen_model_oncelikli(self):
+        self.assertEqual(y.model_sec(self.MODELLER, "dengeli", "d2")["id"], "d2")
+        self.assertEqual(y.model_sec(self.MODELLER, "hizli", "d2")["id"], "d2", "kullanıcı başka sınıftan da seçebilir")
+        self.assertEqual(y.model_sec(self.MODELLER, "hizli", "yok")["id"], "h", "listede olmayan tercih yok sayılır")
+
+    def test_sinif_bossa_en_yakin_sinif(self):
+        yalniz_dengeli = [{"id": "d", "ad": "D", "sinif": "dengeli"}]
+        for sinif in y.SINIFLAR:
+            self.assertEqual(y.model_sec(yalniz_dengeli, sinif)["id"], "d")
+        self.assertEqual(y.model_sec([{"id": "g", "sinif": "guclu"}, {"id": "h", "sinif": "hizli"}], "dengeli")["id"], "g")
+        self.assertEqual(y.model_sec([{"id": "x"}], "guclu")["id"], "x", "sınıfsız model yine de verilir")
+
+    def test_bos_ya_da_bozuk_liste(self):
+        for liste in ([], None, [None, 5, {"ad": "kimliksiz"}, {"id": ""}]):
+            self.assertIsNone(y.model_sec(liste, "dengeli"))
 
 
 class ModelEslemeTesti(unittest.TestCase):

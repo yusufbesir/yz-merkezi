@@ -11,19 +11,16 @@
 <body>
   <aside id="kenar" class="kenar">
     <div class="kenar-ust">
-      <button class="simge" id="kenarKapat" title="Kenar çubuğunu gizle (Ctrl+B)">☰</button>
+      <button class="simge" id="kenarKapat" title="Kenar çubuğunu gizle (Ctrl+B)" aria-label="Kenar çubuğunu gizle">☰</button>
       <span class="kenar-marka">Yapay Zeka Merkezi</span>
     </div>
     <button class="kenar-yeni" id="yeniSohbet"><span class="arti">+</span> Yeni sohbet</button>
-    <div class="kenar-ara"><span>⌕</span><input id="ara" placeholder="Sohbet ara"></div>
-    <nav class="kenar-nav">
-      <button data-bolum="sohbetler" class="aktif">💬 Sohbetler</button>
-      <button data-bolum="programlar">▦ Hesapları yönet</button>
-    </nav>
-    <div class="kenar-baslik">Hesaplar ve programlar</div>
-    <div id="kenarProgramlar" class="kenar-programlar"></div>
-    <div class="kenar-baslik satir"><span>Son sohbetler</span><button class="kucuk-dugme" id="sohbetYenile" title="Sohbetleri yenile (site sohbetlerini yeniden oku)">↻ Yenile</button></div>
+    <div class="kenar-ara"><span aria-hidden="true">⌕</span><input id="ara" placeholder="Sohbet ara" aria-label="Sohbet ara"></div>
     <div id="sohbetListesi" class="sohbet-listesi"></div>
+    <div class="kenar-motorlar">
+      <div class="kenar-baslik">Motorlar</div>
+      <div id="kenarMotorlar"></div>
+    </div>
     <div class="kenar-alt">
       <button id="ayarlarAc" class="kenar-kullanici">
         <span class="avatar" id="avatar">Y</span>
@@ -35,44 +32,43 @@
 
   <main class="ana">
     <header class="ust">
-      <button class="simge" id="kenarAc" title="Kenar çubuğunu göster" hidden>☰</button>
+      <button class="simge" id="kenarAc" title="Kenar çubuğunu göster" aria-label="Kenar çubuğunu göster" hidden>☰</button>
       <div class="ust-baslik" id="ustBaslik">Yeni sohbet</div>
       <div class="ust-araclar">
-        <button id="hepsiniAc" title="İşaretli kapalı hesapları ve programları aç">Hepsini aç</button>
-        <button id="diz" title="İşaretli pencereleri ekranda yan yana diz">Yan yana diz</button>
-        <button class="simge" id="sohbetMenu" title="Sohbet seçenekleri">⋯</button>
+        <button class="simge" id="sohbetMenu" title="Sohbet seçenekleri" aria-label="Sohbet seçenekleri">⋯</button>
       </div>
     </header>
 
     <section id="icerik" class="icerik">
       <div id="karsilama" class="karsilama">
-        <div class="karsilama-logo">✦</div>
+        <div class="karsilama-logo" aria-hidden="true">✦</div>
         <h1 id="selam">Günaydın, Yusuf</h1>
+        <div id="karsilamaMotorlar" class="karsilama-motorlar"></div>
+        <div id="karsilamaNot" class="karsilama-not" hidden></div>
       </div>
-      <div id="mesajlar" class="mesajlar"></div>
+      <div id="mesajlar" class="mesajlar" aria-live="polite"></div>
     </section>
+    <button id="asagiGit" class="asagi-git" title="En alta in" aria-label="En alta in" hidden>↓</button>
 
     <footer class="yazma-alani">
-      <div id="girisSeridi" class="giris-seridi" hidden></div>
       <div id="hassasSeridi" class="hassas-seridi" hidden></div>
-      <div id="oneriSeridi" class="oneri-seridi" hidden></div>
       <div class="yazici">
-        <textarea id="mesaj" rows="1" placeholder="Yapay zekalara ne sormak istersin?"></textarea>
+        <textarea id="mesaj" rows="1" placeholder="Bir şey sor…" aria-label="Mesaj"></textarea>
         <div class="yazici-alt">
           <div class="yazici-sol">
-            <button class="simge yuvarlak" id="ekleMenu" title="Masaüstü programı ekle">+</button>
-            <button class="simge yuvarlak" id="dizKucuk" title="Yan yana diz">▦</button>
+            <div class="motor-secici">
+              <button id="motorDugme" class="motor-dugme" aria-haspopup="true" aria-expanded="false" title="Hangi motor yanıtlasın?">
+                <span class="nokta" id="motorNokta"></span><span id="motorOzet">Otomatik</span><span class="ok" aria-hidden="true">⌄</span>
+              </button>
+            </div>
           </div>
           <div class="yazici-sag">
-            <div class="hedef-secici">
-              <button id="hedefDugme" class="hedef-dugme"><span id="hedefOzet">3 hesap</span> <span class="ok">⌄</span></button>
-              <div id="hedefMenu" class="hedef-menu" hidden></div>
-            </div>
-            <button id="gonder" class="gonder" title="Gönder (Enter)">↑</button>
+            <button id="durdur" class="durdur" title="Yanıtı durdur" aria-label="Yanıtı durdur" hidden><span></span></button>
+            <button id="gonder" class="gonder" title="Gönder (Enter)" aria-label="Gönder">↑</button>
           </div>
         </div>
       </div>
-      <div class="yazma-not" id="durumSatiri">Mesaj, işaretli hesapların ve programların hepsine aynı anda gider.</div>
+      <div class="yazma-not" id="durumSatiri">Enter gönderir, Shift+Enter yeni satır açar.</div>
     </footer>
   </main>
 
@@ -83,26 +79,23 @@
         <div class="ayarlar-baslik">Ayarlar</div>
         <button data-sekme="genel" class="aktif">Genel</button>
         <button data-sekme="gorunum">Görünüm</button>
-        <button data-sekme="programlar">Programlar</button>
-        <button data-sekme="hafiza">Hafıza</button>
+        <button data-sekme="motorlar">Motorlar</button>
         <button data-sekme="yonlendirme">Yönlendirme</button>
+        <button data-sekme="hafiza">Hafıza</button>
         <button data-sekme="jev">Jev</button>
+        <button data-sekme="gelismis">Gelişmiş</button>
         <button data-sekme="kisayollar">Kısayollar</button>
         <button data-sekme="hakkinda">Hakkında</button>
       </nav>
       <div class="ayarlar-icerik">
-        <button class="simge ayarlar-kapat" id="ayarlarKapat" title="Kapat (Esc)">✕</button>
+        <button class="simge ayarlar-kapat" id="ayarlarKapat" title="Kapat (Esc)" aria-label="Kapat">✕</button>
 
         <section data-sekme="genel">
           <h2>Genel</h2>
           <div class="ayar-satir"><div><b>Adın</b><small>Karşılama mesajında kullanılır.</small></div><input id="ayarAd" maxlength="30"></div>
-          <div class="ayar-satir"><div><b>Enter'a da bas</b><small>Kapalıysa mesaj yalnızca yapıştırılır, göndermeyi sen yaparsın.</small></div><label class="anahtar"><input type="checkbox" id="ayarEnter"><span></span></label></div>
-          <div class="ayar-satir"><div><b>Gönderince kutuyu temizle</b><small>Mesaj gittikten sonra yazı kutusu boşalır.</small></div><label class="anahtar"><input type="checkbox" id="ayarTemizle"><span></span></label></div>
-          <div class="ayar-satir"><div><b>Çoklu hedefte onay iste</b><small>Birden fazla hesap seçiliyken ilk gönderimde "Şu hesaplara gidecek" diye bir kez sorar.</small></div><label class="anahtar"><input type="checkbox" id="ayarCokluOnay"><span></span></label></div>
+          <div class="ayar-satir"><div><b>Varsayılan motor</b><small>"Otomatik" her mesaj için en uygun motoru kendisi seçer. Yazı kutusundaki seçiciden de değiştirebilirsin.</small></div>
+            <select id="ayarVarsayilanMotor"><option value="otomatik">Otomatik</option><option value="claude">Claude</option><option value="codex">Codex (ChatGPT)</option><option value="gemini">Gemini</option></select></div>
           <div class="ayar-satir"><div><b>Göndermeden önce hassas bilgi uyarısı</b><small>Mesajda API anahtarı, parola, T.C. kimlik numarası, IBAN ya da kart numarası gibi kalıplar varsa göndermeden önce sorar ("Yine de gönder / Vazgeç"). Önce bu bilgisayarda kurallarla taranır; kurallar bir şey bulamazsa ve Jev açıksa (Ayarlar → Jev) metin ikinci görüş için Jev'e de gider.</small></div><label class="anahtar"><input type="checkbox" id="ayarHassasUyari"><span></span></label></div>
-          <div class="ayar-satir"><div><b>Otomatik yönlendirme</b><small>Açıkken yazdığın mesaja göre önerilen hesap ve model kendiliğinden seçilir; öneri şeridi yine görünür ve "Değiştir" ile başka öneriye geçebilirsin. Kapalıyken öneri yalnızca gösterilir.</small></div><label class="anahtar"><input type="checkbox" id="ayarOtomatikYonlendirme"><span></span></label></div>
-          <div class="ayar-satir"><div><b>Yerleşim</b><small>"Yan yana diz" komutunda bu pencere nerede dursun?</small></div>
-            <select id="ayarYerlesim"><option value="sol">Solda sütun</option><option value="alt">Altta çubuk</option></select></div>
         </section>
 
         <section data-sekme="gorunum" hidden>
@@ -117,43 +110,65 @@
             </div></div>
         </section>
 
-        <section data-sekme="programlar" hidden>
-          <h2>Programlar</h2>
-          <h3>Hesaplar (web)</h3>
-          <p class="aciklama">ChatGPT, Gemini ve Claude web siteleri bu uygulamanın kendi tarayıcı profilinde açılır. Her sitede bir kez giriş yapman yeterli; oturum bu profilde kalır, sohbetler arka planda okunur ve yazılır.</p>
-          <div id="siteAyarListesi" class="program-listesi"></div>
-          <h3>Masaüstü programları (yedek)</h3>
-          <p class="aciklama">Web hesapları yerine bilgisayardaki programlara pano ve tuş taklidiyle yazmak istersen. Bir programda mesaj yanlış yere giderse "Yazı kutusunu öğret"e basıp 4 saniye içinde fareyi o programın yazı kutusunun üstüne getir. Bu programlar mesaj kutusundaki seçiciden işaretlenmediği sürece kullanılmaz.</p>
-          <div id="programAyarListesi" class="program-listesi"></div>
-          <button id="programEkleAc" class="birincil">+ Program ekle</button>
-        </section>
-
-        <section data-sekme="hafiza" hidden>
-          <h2>Hafıza</h2>
-          <p class="aciklama">Hafıza OS kasandaki notlar üç siteye (ChatGPT, Gemini, Claude) aynı kaynaktan bağlam olarak verilebilir. Eklenen bağlam o sitelere gider; sır benzeri satırlar (anahtar, parola, şifre) dışarıda bırakılır.</p>
-          <div class="ayar-satir"><div><b>Hafızayı mesaja ekle</b><small>Gönderilen mesajın başına kişisel notlarından ilgili birkaç satır eklenir. Bağlam bulunamazsa ya da hafıza aracı yanıt vermezse mesaj olduğu gibi gider.</small></div><label class="anahtar"><input type="checkbox" id="ayarHafizaEkle"><span></span></label></div>
-          <div class="ayar-satir"><div><b>Yanıtları hafızaya aday olarak yaz</b><small>Alınan yanıtların kısa özeti kasanın gelen kutusuna eklenir (yalnızca ekleme; var olan notlara dokunulmaz, katalog ve Mem0'a doğrudan yazılmaz).</small></div><label class="anahtar"><input type="checkbox" id="ayarHafizaAday"><span></span></label></div>
-          <p class="aciklama" id="hafizaDurum">Durum okunuyor…</p>
-          <p class="aciklama" id="hafizaKasa"></p>
+        <section data-sekme="motorlar" hidden>
+          <h2>Motorlar</h2>
+          <p class="aciklama">Yapay Zeka Merkezi, bu bilgisayarda kurulu üç yapay zeka aracını (Claude, Codex ve Gemini komut satırı araçları) arka planda kendisi çalıştırır; hiçbir dış pencereye mesaj göndermez. Her araç kendi hesabınla bir kez giriş yapılarak kullanılır. Parola ya da API anahtarı bu uygulamaya yazılmaz.</p>
+          <div id="motorAyarListesi" class="motor-kartlar"></div>
+          <button id="motorlariDenetle" class="birincil">Motorları yeniden denetle</button>
         </section>
 
         <section data-sekme="yonlendirme" hidden>
           <h2>Yönlendirme</h2>
-          <p class="aciklama">Yazdığın mesaj sınıflandırılır (tür ve zorluk; Jev açık ve hazırsa Jev ile, değilse kurallarla) ve aşağıdaki tercih sırasına göre bir hesap ve model önerilir. Model adı sitenin canlı menüsünden bulunur; menü okunamazsa yalnızca hesap önerilir. Kuralları değiştirmek için dosyayı düzenle; değişiklik bir sonraki öneride geçerli olur.</p>
+          <p class="aciklama">"Otomatik" seçiliyken mesajın türü ve zorluğu belirlenir (Jev açık ve hazırsa Jev ile, değilse kurallarla) ve aşağıdaki tercih sırasına göre bir motor ve model sınıfı seçilir. İlk tercih hazır değilse sıradaki motora geçilir. Model adı, motorun kendi listesinden sınıfa göre bulunur (Ayarlar → Motorlar'da değiştirilebilir). Kuralları değiştirmek için dosyayı düzenle; değişiklik bir sonraki mesajda geçerli olur.</p>
           <div class="ayar-satir"><div><b>Kural dosyası</b><small><code id="yonlendirmeDosya">…</code></small></div><button id="yonlendirmeAc" class="birincil">yonlendirme.json dosyasını aç</button></div>
           <p class="aciklama" id="yonlendirmeSon">Son sınıflandırma: henüz yok.</p>
           <p class="aciklama" id="yonlendirmeUyari"></p>
           <table class="yonlendirme-tablo" id="yonlendirmeTablo"></table>
         </section>
 
+        <section data-sekme="hafiza" hidden>
+          <h2>Hafıza</h2>
+          <p class="aciklama">Hafıza OS kasandaki notlar, hangi motor yanıtlarsa yanıtlasın aynı kaynaktan bağlam olarak verilebilir. Eklenen bağlam seçilen motora (yani o şirketin sunucusuna) gider; sır benzeri satırlar (anahtar, parola, şifre) dışarıda bırakılır.</p>
+          <div class="ayar-satir"><div><b>Hafızayı mesaja ekle</b><small>Gönderilen mesajın başına kişisel notlarından ilgili birkaç satır eklenir. Bağlam bulunamazsa ya da hafıza aracı yanıt vermezse mesaj olduğu gibi gider.</small></div><label class="anahtar"><input type="checkbox" id="ayarHafizaEkle"><span></span></label></div>
+          <div class="ayar-satir"><div><b>Yanıtları hafızaya aday olarak yaz</b><small>Alınan yanıtların kısa özeti kasanın gelen kutusuna eklenir (yalnızca ekleme; var olan notlara dokunulmaz, katalog ve Mem0'a doğrudan yazılmaz).</small></div><label class="anahtar"><input type="checkbox" id="ayarHafizaAday"><span></span></label></div>
+          <p class="aciklama" id="hafizaDurum">Durum okunuyor…</p>
+          <p class="aciklama" id="hafizaKasa"></p>
+        </section>
+
         <section data-sekme="jev" hidden>
           <h2>Jev</h2>
-          <p class="aciklama">Jev, TypeSafe'in karar modelidir. Açıkken hassas bilgi uyarısında (yerel kurallar bir şey bulamazsa ikinci görüş olarak) ve ajan seçiminde (tür ve zorluk) kullanılır. Jev kapalıysa, hazır değilse ya da hata verirse uygulama kurallarla çalışmaya devam eder.</p>
-          <p class="aciklama uyari-metni">Mesajların ve seçtiğin durumlarda yanıtların TypeSafe'in uzak Jev sunucusuna gider (Yusuf'un onayıyla). Yeni bir Jev sürümü ya da yerel seçenek çıkınca yeniden değerlendirilecek.</p>
-          <div class="ayar-satir"><div><b>Jev açık</b><small>Kapalıyken Jev'e hiçbir istek gönderilmez; hassas bilgi uyarısı ve yönlendirme yalnızca kurallarla çalışır.</small></div><label class="anahtar"><input type="checkbox" id="ayarJevAcik"><span></span></label></div>
-          <div class="ayar-satir"><div><b>Yanıtları Jev ile puanla</b><small>Ortak sohbette bütün hesapların yanıtları gelince soru ve yanıtların ilk kısmı Jev'e gider; en iyi bulunan yanıta "Önerilen yanıt (Jev)" rozeti konur. Varsayılan kapalı.</small></div><label class="anahtar"><input type="checkbox" id="ayarJevPuanla"><span></span></label></div>
+          <p class="aciklama">Jev, TypeSafe'in karar modelidir. Açıkken hassas bilgi uyarısında (yerel kurallar bir şey bulamazsa ikinci görüş olarak) ve motor seçiminde (mesajın türü ve zorluğu) kullanılır. Jev kapalıysa, hazır değilse ya da hata verirse uygulama kurallarla çalışmaya devam eder.</p>
+          <p class="aciklama uyari-metni">Mesajların TypeSafe'in uzak Jev sunucusuna gider (Yusuf'un onayıyla). Yeni bir Jev sürümü ya da yerel seçenek çıkınca yeniden değerlendirilecek.</p>
+          <div class="ayar-satir"><div><b>Jev açık</b><small>Kapalıyken Jev'e hiçbir istek gönderilmez; hassas bilgi uyarısı ve motor seçimi yalnızca kurallarla çalışır.</small></div><label class="anahtar"><input type="checkbox" id="ayarJevAcik"><span></span></label></div>
           <p class="aciklama" id="jevDurum">Durum okunuyor…</p>
           <p class="aciklama" id="jevAyrinti"></p>
+        </section>
+
+        <section data-sekme="gelismis" hidden>
+          <h2>Gelişmiş</h2>
+          <p class="aciklama uyari-metni">Bu bölüm eski çoklu pencere yöntemidir: ChatGPT, Gemini ve Claude web siteleri ve bilgisayardaki masaüstü programları ayrı pencerelerde açılır ve aynı mesaj hepsine birden gönderilir. Tek Asistan bu pencerelere hiçbir şey göndermez; bunlar yalnızca sen kullanmak istersen buradadır.</p>
+          <h3>Hesaplar (web)</h3>
+          <p class="aciklama">Web siteleri bu uygulamanın kendi tarayıcı profilinde açılır. Her sitede bir kez giriş yapman yeterli.</p>
+          <div id="siteAyarListesi" class="program-listesi"></div>
+          <h3>Masaüstü programları (yedek)</h3>
+          <p class="aciklama">Bilgisayardaki programlara pano ve tuş taklidiyle yazmak istersen. Bir programda mesaj yanlış yere giderse "Yazı kutusunu öğret"e basıp 4 saniye içinde fareyi o programın yazı kutusunun üstüne getir.</p>
+          <div id="programAyarListesi" class="program-listesi"></div>
+          <div class="dugme-satiri">
+            <button id="programEkleAc" class="birincil">+ Program ekle</button>
+            <button id="hepsiniAc" title="İşaretli kapalı hesapları ve programları aç">Hepsini aç</button>
+            <button id="diz" title="İşaretli pencereleri ekranda yan yana diz">Yan yana diz</button>
+          </div>
+          <div class="ayar-satir"><div><b>Yerleşim</b><small>"Yan yana diz" komutunda bu pencere nerede dursun?</small></div>
+            <select id="ayarYerlesim"><option value="sol">Solda sütun</option><option value="alt">Altta çubuk</option></select></div>
+          <div class="ayar-satir"><div><b>Enter'a da bas</b><small>Kapalıysa mesaj pencerelere yalnızca yapıştırılır, göndermeyi sen yaparsın.</small></div><label class="anahtar"><input type="checkbox" id="ayarEnter"><span></span></label></div>
+          <div class="ayar-satir"><div><b>Yanıtları Jev ile puanla</b><small>Çoklu pencere gönderiminde bütün hesapların yanıtları gelince soru ve yanıtların ilk kısmı Jev'e gider; en iyi bulunan yanıta "Önerilen yanıt (Jev)" rozeti konur. Tek motorda anlamsız olduğundan yalnızca burada kullanılır. Varsayılan kapalı.</small></div><label class="anahtar"><input type="checkbox" id="ayarJevPuanla"><span></span></label></div>
+          <h3>Çoklu pencereye gönder</h3>
+          <div id="coklu" class="coklu">
+            <div id="cokluHedefler" class="coklu-hedefler"></div>
+            <textarea id="cokluMesaj" rows="3" placeholder="İşaretli pencerelerin hepsine gidecek mesaj"></textarea>
+            <div class="dugme-satiri"><button id="cokluGonder" class="birincil">Hepsine gönder</button><span class="soluk" id="cokluDurum"></span></div>
+            <div id="cokluYanitlar" class="coklu-yanitlar"></div>
+          </div>
         </section>
 
         <section data-sekme="kisayollar" hidden>
@@ -164,14 +179,15 @@
             <tr><td>Yeni sohbet</td><td><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>O</kbd></td></tr>
             <tr><td>Kenar çubuğunu aç/kapat</td><td><kbd>Ctrl</kbd> + <kbd>B</kbd></td></tr>
             <tr><td>Ayarlar</td><td><kbd>Ctrl</kbd> + <kbd>,</kbd></td></tr>
-            <tr><td>Yan yana diz</td><td><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>D</kbd></td></tr>
-            <tr><td>Yazı kutusuna odaklan</td><td><kbd>Esc</kbd></td></tr>
+            <tr><td>Sohbet ara</td><td><kbd>Ctrl</kbd> + <kbd>K</kbd></td></tr>
+            <tr><td>Yanıtı durdur</td><td><kbd>Esc</kbd></td></tr>
           </table>
         </section>
 
         <section data-sekme="hakkinda" hidden>
           <h2>Hakkında</h2>
-          <p class="aciklama">Yapay Zeka Merkezi, ChatGPT, Gemini ve Claude hesaplarını tek ekrandan kullanmanı sağlar. Web siteleri kendi profilinde (<code>%LOCALAPPDATA%\YZMerkezi\tarayici-profili</code>) açılır; oturum çerezleri yalnızca o profilde kalır, kullandığın Edge profiline dokunulmaz. API anahtarı yoktur: siteler kendi hesabınla çalışır. Bilgisayarda kurulu masaüstü programları yedek yol olarak durur. Ayarlar ve yerel sohbet geçmişi <code>%LOCALAPPDATA%\YZMerkezi\masaustu-ayarlar.json</code> dosyasında saklanır.</p>
+          <p class="aciklama">Yapay Zeka Merkezi tek bir yapay zeka gibi çalışır: yazdığın her mesaj için en uygun motoru (Claude, Codex ya da Gemini) kendisi seçer, yanıtı tek bir akışta gösterir ve konuşma sürekliliğini korur. Motorlar bu bilgisayardaki komut satırı araçlarıdır; kendi hesabınla çalışırlar, API anahtarı yoktur. Ayarlar ve yerel sohbet geçmişi <code>%LOCALAPPDATA%\YZMerkezi\masaustu-ayarlar.json</code> dosyasında saklanır.</p>
+          <p class="aciklama">Eski çoklu pencere yöntemi (web siteleri ve masaüstü programları) Ayarlar → Gelişmiş altındadır.</p>
         </section>
       </div>
     </div>
@@ -185,12 +201,16 @@
       <label>Açık pencere <select id="pencereSecimi"></select></label>
       <label>Görünecek ad <input id="yeniAd" placeholder="ör. Grok"></label>
       <label id="baslikAlani" hidden>Pencere başlığında hep geçen kelime <input id="yeniBaslik" placeholder="ör. Grok"></label>
-      <p id="tarayiciUyari" class="aciklama" hidden>Tarayıcılar program olarak eklenemez. ChatGPT, Gemini ve Claude web hesapları zaten kenar çubuğundan açılır.</p>
+      <p id="tarayiciUyari" class="aciklama" hidden>Tarayıcılar program olarak eklenemez. ChatGPT, Gemini ve Claude web hesapları zaten Ayarlar → Gelişmiş altından açılır.</p>
     </div>
     <div class="dugmeler"><button id="programEkleIptal">Vazgeç</button><button id="programEkleTamam" class="birincil">Ekle</button></div>
   </dialog>
 
+  <!-- Sohbet menüsü / motor notu / yeniden sor menüsü için ortak açılır katman -->
+  <div id="acilir" class="acilir-menu" hidden></div>
   <div id="bildirim" class="bildirim" hidden></div>
+  <script src="markdown.js"></script>
   <script src="uygulama.js"></script>
+  <script src="gelismis.js"></script>
 </body>
 </html>

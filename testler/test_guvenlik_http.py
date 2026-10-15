@@ -558,13 +558,16 @@ class ArayuzDosyalariTesti(unittest.TestCase):
                 parca = js[m.start():m.start() + 300]
                 self.assertTrue("X-YZ-Token" in parca or "secenek" in parca or "basliklar" in parca, parca)
 
-    def test_masaustu_cokl_hedef_onayi(self):
+    def test_masaustu_tek_asistan_arayuzu(self):
         js = (KOK / "arayuz-masaustu" / "uygulama.js").read_text("utf-8")
-        self.assertIn("Şu hesaplara gidecek", js)
-        self.assertIn("onaylandi", js)
+        self.assertIn("/api/sor", js)
+        self.assertIn("onay_gerekli", js)          # hassas bilgi onayı akışta da var
+        self.assertNotRegex(js, r"innerHTML")      # güvenli DOM üretimi
+        md = (KOK / "arayuz-masaustu" / "markdown.js").read_text("utf-8")
+        self.assertNotRegex(md, r"innerHTML")
         html = (KOK / "arayuz-masaustu" / "index.html").read_text("utf-8")
-        self.assertIn("Çoklu hedefte onay iste", html)
-        self.assertIn('id="ayarCokluOnay"', html)
+        self.assertIn('data-sekme="gelismis"', html)   # eski pencere yolları Gelişmiş altında
+        self.assertIn('id="hepsiniAc"', html)
 
 
 if __name__ == "__main__":

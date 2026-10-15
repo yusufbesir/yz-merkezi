@@ -1,10 +1,9 @@
-"""Ajan seçimi / yönlendirici (kural tabanlı, yalnızca standart kütüphane, ağa dokunmaz).
+"""Motor yönlendiricisi (kural tabanlı, yalnızca standart kütüphane, ağa dokunmaz).
 
-Yazılan mesajı sınıflandırır (tür ve zorluk) ve `yonlendirme.json` içindeki tercih sırasına göre
-hangi siteye (ve hangi modele) gitmesinin uygun olacağını önerir. Model adı burada UYDURULMAZ:
-dosyada yalnızca bir ad parçası (`model_icerir`, ör. "flash", "sonnet") yazılıdır; gerçek model adı,
-sitenin canlı model menüsünden büyük/küçük harf duyarsız "içerir" eşleşmesiyle bulunur
-(masaustu_sunucu.py → /api/oneri).
+Yazılan mesajı sınıflandırır (tür ve zorluk) ve `yonlendirme.json` içindeki tercih sırasına göre hangi motorun
+(claude / codex / gemini) ve hangi model sınıfının (hizli / dengeli / guclu) uygun olacağını önerir. Model adı burada
+UYDURULMAZ: dosyada yalnızca sınıf yazılıdır; gerçek model, motorun `modeller()` listesinden sınıfa göre seçilir
+(`model_sec`; masaustu_sunucu.py bunu çağırır).
 
 yonlendirme.json biçimi:
     {
@@ -12,9 +11,9 @@ yonlendirme.json biçimi:
       "turler": {"kod": {"basit": [...], "orta": [...], "zor": [...]},
                  "ceviri": {"hepsi": [...]}, ...}
     }
-TERCIH = {"site": "gemini" | "chatgpt" | "claude", "model_icerir": "flash"}. Bir (tür, zorluk) için aranış sırası:
-turler[tür][zorluk] → turler[tür]["hepsi"] → varsayilan[zorluk]. Dosya yoksa ya da bozuksa yerleşik varsayılan
-kullanılır ve sebep döner (uygulama açılışta kırılmaz).
+TERCIH = {"motor": "claude" | "codex" | "gemini", "sinif": "hizli" | "dengeli" | "guclu"}. Bir (tür, zorluk) için
+aranış sırası: turler[tür][zorluk] → turler[tür]["hepsi"] → varsayilan[zorluk]. Dosya yoksa ya da bozuksa yerleşik
+varsayılan kullanılır ve sebep döner (uygulama açılışta kırılmaz).
 """
 import json
 import os
@@ -26,27 +25,31 @@ YONLENDIRME_DOSYASI = Path(os.environ.get("YZ_YONLENDIRME") or KOK / "yonlendirm
 
 TURLER = ("arastirma", "kod", "yazi", "ceviri", "ozet", "sohbet", "matematik")
 ZORLUKLAR = ("basit", "orta", "zor")
-SITELER = ("chatgpt", "gemini", "claude")
+MOTORLAR = ("claude", "codex", "gemini")
+SINIFLAR = ("hizli", "dengeli", "guclu")
 
 TUR_ADLARI = {"arastirma": "araştırma", "kod": "kod", "yazi": "yazı", "ceviri": "çeviri", "ozet": "özet",
               "sohbet": "sohbet", "matematik": "matematik"}
 ZORLUK_ADLARI = {"basit": "basit", "orta": "orta", "zor": "zor"}
-SITE_ADLARI = {"chatgpt": "ChatGPT", "gemini": "Gemini", "claude": "Claude"}
+MOTOR_ADLARI = {"claude": "Claude", "codex": "Codex", "gemini": "Gemini"}
+SINIF_ADLARI = {"hizli": "hızlı", "dengeli": "dengeli", "guclu": "güçlü"}
 
 # Uzunluk eşikleri (karakter): bunun altı basit, bunun altı orta, üstü zor.
 BASIT_SINIRI = 200
 ORTA_SINIRI = 1200
 INCELEME_SINIRI = 20000  # karakter: desen araması metnin en çok bu kadar başına bakar
 
+
+def _t(motor, sinif):
+    return {"motor": motor, "sinif": sinif}
+
+
 # Dosya yoksa/bozuksa kullanılan yerleşik varsayılan (yonlendirme.json'daki "varsayilan" bölümüyle aynı).
 YERLESIK = {
     "varsayilan": {
-        "basit": [{"site": "gemini", "model_icerir": "flash"}, {"site": "chatgpt", "model_icerir": "mini"},
-                  {"site": "claude", "model_icerir": "haiku"}],
-        "orta": [{"site": "claude", "model_icerir": "sonnet"}, {"site": "chatgpt", "model_icerir": "gpt"},
-                 {"site": "gemini", "model_icerir": "pro"}],
-        "zor": [{"site": "claude", "model_icerir": "opus"}, {"site": "chatgpt", "model_icerir": "pro"},
-                {"site": "gemini", "model_icerir": "pro"}],
+        "basit": [_t("gemini", "hizli"), _t("codex", "hizli"), _t("claude", "hizli")],
+        "orta": [_t("claude", "dengeli"), _t("codex", "dengeli"), _t("gemini", "dengeli")],
+        "zor": [_t("claude", "guclu"), _t("codex", "guclu"), _t("gemini", "guclu")],
     },
     "turler": {},
 }
@@ -106,15 +109,14 @@ def siniflandir(metin):
 # ---------------------------------------------------------------- kurallar (yonlendirme.json)
 
 def _tercih_gecerli_mi(t):
-    return (isinstance(t, dict) and t.get("site") in SITELER
-            and isinstance(t.get("model_icerir"), str) and 0 < len(t["model_icerir"].strip()) <= 60)
+    return isinstance(t, dict) and t.get("motor") in MOTORLAR and t.get("sinif") in SINIFLAR
 
 
 def _liste_temizle(liste):
-    """Geçerli tercihleri ({"site","model_icerir"}) sırayı koruyarak döndürür; liste değilse None."""
+    """Geçerli tercihleri ({"motor","sinif"}) sırayı koruyarak döndürür; liste değilse None."""
     if not isinstance(liste, list):
         return None
-    return [{"site": t["site"], "model_icerir": t["model_icerir"].strip()} for t in liste if _tercih_gecerli_mi(t)]
+    return [{"motor": t["motor"], "sinif": t["sinif"]} for t in liste if _tercih_gecerli_mi(t)]
 
 
 def kurallari_dogrula(ham):
@@ -169,25 +171,48 @@ def tercihler(kurallar, tur, zorluk):
     return ozel.get(zorluk) or ozel.get("hepsi") or kurallar["varsayilan"][zorluk]
 
 
+def _tercih_gorunumu(t):
+    return {"motor": t["motor"], "motor_ad": MOTOR_ADLARI[t["motor"]],
+            "sinif": t["sinif"], "sinif_ad": SINIF_ADLARI[t["sinif"]]}
+
+
 def tablo(kurallar):
     """Arayüzdeki salt okunur görünüm için: her tür × zorluk için etkin tercih sırası."""
     satirlar = []
     for tur in TURLER:
         for z in ZORLUKLAR:
             satirlar.append({"tur": tur, "tur_ad": TUR_ADLARI[tur], "zorluk": z, "zorluk_ad": ZORLUK_ADLARI[z],
-                             "tercihler": [{"site": t["site"], "site_ad": SITE_ADLARI[t["site"]],
-                                            "model_icerir": t["model_icerir"]}
-                                           for t in tercihler(kurallar, tur, z)]})
+                             "tercihler": [_tercih_gorunumu(t) for t in tercihler(kurallar, tur, z)]})
     return satirlar
 
 
-# ---------------------------------------------------------------- öneri ve model eşleştirme
+# ---------------------------------------------------------------- öneri ve model seçimi
+
+# Sınıf bulunamazsa en yakın sınıfa bakılır (sıra: önce istenen, sonra komşular).
+SINIF_YEDEKLERI = {"hizli": ("hizli", "dengeli", "guclu"), "dengeli": ("dengeli", "guclu", "hizli"),
+                   "guclu": ("guclu", "dengeli", "hizli")}
+
+
+def model_sec(modeller, sinif, tercih_id=None):
+    """Motorun `modeller()` listesinden ({"id","ad","sinif"}) sınıfa uygun modeli seçer; yoksa None.
+
+    tercih_id (Ayarlar → Motorlar'da seçilen model) listede varsa o alınır; yoksa sınıfın ilk modeli, sınıf boşsa en
+    yakın sınıfınki, hiçbiri yoksa listenin ilk modeli. Liste boşsa None (motor kendi varsayılanını kullanır).
+    """
+    gecerli = [m for m in modeller or [] if isinstance(m, dict) and isinstance(m.get("id"), str) and m["id"]]
+    if tercih_id:
+        for m in gecerli:
+            if m["id"] == tercih_id:
+                return m
+    for s in SINIF_YEDEKLERI.get(sinif, SINIF_YEDEKLERI["dengeli"]):
+        for m in gecerli:
+            if m.get("sinif") == s:
+                return m
+    return gecerli[0] if gecerli else None
+
 
 def model_esles(modeller, model_icerir):
-    """Canlı menüdeki ilk eşleşen model adı (büyük/küçük harf duyarsız "içerir"), yoksa None.
-
-    modeller: [{"id", "ad", "secili"}] ya da ad listesi. Birden çok eşleşmede menü sırasındaki ilki alınır.
-    """
+    """Menüdeki ilk eşleşen model adı (büyük/küçük harf duyarsız "içerir"), yoksa None (site menüsü yolu için)."""
     aranan = str(model_icerir or "").strip().casefold()
     if not aranan:
         return None
@@ -199,10 +224,10 @@ def model_esles(modeller, model_icerir):
 
 
 def oner(metin, kurallar=None, sinif=None, kaynak="kural"):
-    """{"tur","zorluk","tur_ad","zorluk_ad","oneriler":[{"site","site_ad","model_icerir","sebep"}],"kaynak"}.
+    """{"tur","zorluk","tur_ad","zorluk_ad","oneriler":[{"motor","motor_ad","sinif","sinif_ad","sebep"}],"kaynak"}.
 
     sinif: dışarıda (ör. Jev ile) bulunmuş {"tur", "zorluk"}; verilmezse ya da geçersizse kural tabanlı sınıflandırma
-    kullanılır ve kaynak "kural" olur. "model" alanını çağıran doldurur (canlı menüden); burada model adı uydurulmaz.
+    kullanılır ve kaynak "kural" olur. Model adı burada uydurulmaz; çağıran motorun listesinden `model_sec` ile seçer.
     """
     if kurallar is None:
         kurallar, _ = kurallari_yukle()
@@ -213,7 +238,7 @@ def oner(metin, kurallar=None, sinif=None, kaynak="kural"):
     oneriler = []
     for sira, t in enumerate(tercihler(kurallar, s["tur"], s["zorluk"]), 1):
         oneriler.append({
-            "site": t["site"], "site_ad": SITE_ADLARI[t["site"]], "model_icerir": t["model_icerir"],
+            **_tercih_gorunumu(t),
             "sebep": f"{ZORLUK_ADLARI[s['zorluk']].capitalize()} {TUR_ADLARI[s['tur']]} isteği için {sira}. tercih",
         })
     return {"tur": s["tur"], "zorluk": s["zorluk"], "tur_ad": TUR_ADLARI[s["tur"]],

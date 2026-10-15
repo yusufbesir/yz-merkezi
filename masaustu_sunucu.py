@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """Yapay Zeka Merkezi (masaüstü sürümü) arka ucu.
 
-Birincil yol: ChatGPT, Gemini ve Claude WEB siteleri, kendi Edge profilimizde (tarayici.py) açılır ve
+VARSAYILAN KİP: Tek Asistan. Arayüz tek bir yapay zeka gibi davranır; `POST /api/sor` mesajı hassas bilgi taramasından
+ve Hafıza OS bağlamından geçirir, yönlendirici (yonlendirici.py + Jev) ile bir motor (claude / codex / gemini; `motorlar/`
+paketi, yerel komut satırı araçları) seçer ve yanıtı NDJSON akışı olarak verir. Hiçbir dış pencereye mesaj gitmez.
+
+Gelişmiş kip (Ayarlar → Gelişmiş; kod korunur): ChatGPT, Gemini ve Claude WEB siteleri / masaüstü programları.
+Eski yol: ChatGPT, Gemini ve Claude WEB siteleri, kendi Edge profilimizde (tarayici.py) açılır ve
 CDP ile (cdp.py) arka planda denetlenir; sohbet listesi, mesajlar ve yanıtlar siteler.py'deki JS
 parçalarıyla okunur, yazı Input.insertText ile eklenir. Kullanıcı her sitede bir kez oturum açar.
 Yedek yol: bilgisayarda kurulu masaüstü programlarına pano + tuş taklidiyle gönderme (pencereler.py).
@@ -13,6 +18,7 @@ uygulama penceresinde açılır. API anahtarı gerekmez.
 """
 import atexit
 import concurrent.futures
+import copy
 import json
 import os
 import re
@@ -78,6 +84,9 @@ JEV_HASSAS_ESIGI = 0.6        # Jev'in "yok" dışı seçiminin olasılığı en
 JEV_PUANLAMA_BUTCESI = 3800   # karakter: puanlamada soru + yanıtların toplamı (jev.METIN_EN_FAZLA'nın altında)
 JEV_YANIT_EN_FAZLA = 1500     # karakter: puanlamada her yanıttan en çok bu kadar
 JEV_SORU_EN_FAZLA = 600       # karakter: puanlamada sorudan en çok bu kadar
+# Tek Asistan: son seçilen motor ("otomatik" ya da bir motor kimliği) ve motor/sınıf başına tercih edilen modeller.
+VARSAYILAN_AYARLAR.update(varsayilan_motor="otomatik", motor_modelleri={})
+AYAR_SECENEKLERI["varsayilan_motor"] = {"otomatik", *yonlendirici.MOTORLAR}
 AD_EN_FAZLA = 40
 # Web hesapları (CDP) varken bu tarayıcılar masaüstü programı olarak eklenemez.
 TARAYICI_EXELERI = {"msedge.exe", "chrome.exe", "firefox.exe", "brave.exe", "opera.exe"}
@@ -88,7 +97,7 @@ AYAR_UYARISI = None  # ayar dosyası bozuk çıkıp yedeklenirse arayüze göste
 
 KILIT = threading.Lock()
 KILITSIZ = {"/api/site-ac", "/api/site-sohbet-ac", "/api/pencere-ac", "/api/oneri", "/api/yonlendirme-ac",
-            "/api/yanit-puanla"}  # yanıt puanlama Jev'i beklerken ayar kilidini tutmaz (kilidi kendisi kısa süre alır)
+            "/api/yanit-puanla", "/api/durdur"}  # yanıt puanlama Jev'i beklerken ayar kilidini tutmaz (kilidi kendisi kısa süre alır)
 is_kilidi = threading.Lock()  # aynı anda tek gönderme/öğretme işlemi
 
 
@@ -113,7 +122,7 @@ def ayarlari_oku():
         if not isinstance(veri.get(anahtar), tur):
             veri[anahtar] = tur()
     for k, v in VARSAYILAN_AYARLAR.items():
-        veri["ayarlar"].setdefault(k, v)
+        veri["ayarlar"].setdefault(k, copy.deepcopy(v))
     return veri
 
 
@@ -648,35 +657,429 @@ def yanit_puanla(g):
             "olasiliklar": s["olasiliklar"]}
 
 
-def oneri_olustur(metin):
-    """/api/oneri: metni sınıflandırır, tercih sırasındaki her öneriye canlı menüden eşleşen model adını ekler.
+# ---------------------------------------------------------------- Tek Asistan: motorlar (motorlar/ paketi)
 
-    Jev açık ve hazırsa tür ve zorluk Jev'le bulunur (kaynak "jev"); kapalı/hata → kural tabanlı (kaynak "kural").
-    Döner: yonlendirici.oner() sonucu + her öneride "model" (eşleşen gerçek ad ya da None) ve eşleşme
-    yoksa "model_notu" (Türkçe sebep). Menü okunamazsa yalnızca site önerilir.
+# Motor kimliği -> (ad, renk): motorlar paketi yoksa ya da motor bulunamazsa arayüzün yine de gösterebilmesi için.
+MOTOR_BILGILERI = {"claude": ("Claude", "#d97757"), "codex": ("Codex (ChatGPT)", "#10a37f"),
+                   "gemini": ("Gemini", "#4285f4")}
+MOTOR_ONBELLEK_SURESI = 60        # sn: motor durumları (hazir_mi) bu süre içinde yeniden ölçülmez
+MOTOR_OLCME_ZAMAN_ASIMI = 20      # sn: tüm motorların durum ölçümü için üst sınır
+GIRIS_TALIMATLARI = {
+    "claude": "Giriş için terminalde `claude` komutunu çalıştırıp oturum aç (/login).",
+    "codex": "Giriş için terminalde `codex login` komutunu çalıştırıp ChatGPT hesabınla oturum aç.",
+    "gemini": "Giriş için terminalde `gemini` komutunu çalıştırıp Google hesabınla oturum aç.",
+}
+SOR_METIN_EN_FAZLA = 100000       # karakter: tek mesajın üst sınırı
+TRANSKRIPT_MESAJ_SAYISI = 6       # motor değişince yeni motora verilen son mesaj sayısı
+TRANSKRIPT_MESAJ_EN_FAZLA = 700   # karakter: transkriptte her mesajdan en çok bu kadar
+OTURUM_EN_FAZLA = 2000            # karakter: kayıtlı motor oturumunun (JSON) üst sınırı
+SISTEM_ISTEMI = ("Sen Yapay Zeka Merkezi'nin tek asistanısın; kullanıcı Yusuf ile konuşuyorsun. Kullanıcı Türkçe "
+                 "yazdıysa Türkçe yanıt ver. Doğru, açık ve gereksiz uzatmayan yanıtlar yaz; kod için kod bloğu kullan. "
+                 "Arkanda birden fazla motor olduğundan söz etme.")
+
+_MOTOR_ONBELLEGI = {"zaman": 0.0, "liste": None}   # son motor durumları (/api/durum "motorlar")
+_MOTOR_KILIDI = threading.Lock()
+_IPTALLER = {}                                      # sohbet kimliği -> sürmekte olan yanıtın iptal Event'i
+_IPTAL_KILIDI = threading.Lock()
+
+
+def _motorlar_paketi():
+    """(motorlar paketi, hata sebebi). Paket her çağrıda sys.modules'tan alınır; yoksa (None, Türkçe sebep)."""
+    try:
+        import motorlar
+        return motorlar, None
+    except Exception as h:  # noqa: BLE001  (ImportError ya da paketin kendi hatası: uygulama kırılmaz)
+        return None, f"Motorlar hazır değil: motorlar paketi yüklenemedi ({type(h).__name__})."
+
+
+def _motor(motor_id):
+    """Motor nesnesi (motorlar.motor(id)); paket ya da motor yoksa None."""
+    paket, _ = _motorlar_paketi()
+    if paket is None:
+        return None
+    try:
+        return paket.motor(motor_id)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _motor_durumu_olc(motor_id):
+    """{"id","ad","renk","hazir","sebep","giris","surum"}; hata ya da eksik motor "hazır değil" sayılır."""
+    ad, renk = MOTOR_BILGILERI[motor_id]
+    _, paket_sebebi = _motorlar_paketi()
+    m = _motor(motor_id)
+    if m is None:
+        return {"id": motor_id, "ad": ad, "renk": renk, "hazir": False, "giris": None, "surum": None,
+                "sebep": paket_sebebi or f"{ad} motoru bulunamadı."}
+    ad, renk = str(getattr(m, "ad", None) or ad), str(getattr(m, "renk", None) or renk)
+    try:
+        h = m.hazir_mi()
+        h = h if isinstance(h, dict) else {}
+    except Exception as hata:  # noqa: BLE001
+        h = {"hazir": False, "sebep": f"Durum okunamadı ({type(hata).__name__})."}
+    hazir, giris = h.get("hazir") is True, h.get("giris") if isinstance(h.get("giris"), bool) else None
+    sebep = str(h.get("sebep") or "").strip()
+    if not hazir:
+        sebep = sebep or f"{ad} hazır değil."
+        if giris is False and "giriş" not in sebep.lower():
+            sebep = f"{sebep} {GIRIS_TALIMATLARI[motor_id]}"
+    surum = h.get("surum") if isinstance(h.get("surum"), str) else None
+    return {"id": motor_id, "ad": ad, "renk": renk, "hazir": hazir, "sebep": sebep, "giris": giris, "surum": surum}
+
+
+def motor_durumlari(yenile=False):
+    """Üç motorun durumu (paralel ölçülür, MOTOR_ONBELLEK_SURESI sn önbelleklenir)."""
+    with _MOTOR_KILIDI:
+        simdi = time.monotonic()
+        if not yenile and _MOTOR_ONBELLEGI["liste"] is not None and simdi - _MOTOR_ONBELLEGI["zaman"] < MOTOR_ONBELLEK_SURESI:
+            return copy.deepcopy(_MOTOR_ONBELLEGI["liste"])
+        kimlikler = list(yonlendirici.MOTORLAR)
+        havuz = concurrent.futures.ThreadPoolExecutor(max_workers=len(kimlikler))
+        isler = {mid: havuz.submit(_motor_durumu_olc, mid) for mid in kimlikler}
+        concurrent.futures.wait(isler.values(), timeout=MOTOR_OLCME_ZAMAN_ASIMI)
+        havuz.shutdown(wait=False)
+        liste = []
+        for mid in kimlikler:
+            ad, renk = MOTOR_BILGILERI[mid]
+            if isler[mid].done() and isler[mid].exception() is None:
+                liste.append(isler[mid].result())
+            else:
+                liste.append({"id": mid, "ad": ad, "renk": renk, "hazir": False, "giris": None, "surum": None,
+                              "sebep": f"{ad} durumu zamanında okunamadı."})
+        _MOTOR_ONBELLEGI.update(zaman=time.monotonic(), liste=liste)
+        return copy.deepcopy(liste)
+
+
+def _modeller(m):
+    """Motorun model listesi ([{"id","ad","sinif"}]); hata olursa boş."""
+    try:
+        return [x for x in (m.modeller() or []) if isinstance(x, dict)]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _model_coz(motor_id, m, sinif, ayarlar, istenen=None):
+    """Motorun listesinden modeli seçer: istenen kimlik, Ayarlar → Motorlar tercihi, sınıfa uyan ilk model. Yoksa None."""
+    modeller = _modeller(m) if m is not None else []
+    if istenen and any(x.get("id") == istenen for x in modeller):
+        return next(x for x in modeller if x.get("id") == istenen)
+    tercih = ((ayarlar.get("motor_modelleri") or {}).get(motor_id) or {}).get(sinif)
+    return yonlendirici.model_sec(modeller, sinif, tercih if isinstance(tercih, str) else None)
+
+
+def motor_modelleri():
+    """/api/motor-modelleri: {motor kimliği: [{"id","ad","sinif"}]} (Ayarlar → Motorlar'daki model seçimi için)."""
+    cikti = {}
+    for mid in yonlendirici.MOTORLAR:
+        m = _motor(mid)
+        cikti[mid] = [{"id": str(x.get("id")), "ad": str(x.get("ad") or x.get("id")), "sinif": x.get("sinif")}
+                      for x in (_modeller(m) if m is not None else []) if x.get("id")]
+    return cikti
+
+
+def plan_olustur(metin, ayarlar, motor_istegi="otomatik"):
+    """(yonlendirici sonucu, adaylar, uyarılar). Adaylar tercih sırasıdır: [{"motor","sinif","sebep"}].
+
+    Otomatikte Jev açık ve hazırsa tür/zorluk Jev'le bulunur (kaynak "jev"), değilse kurallarla. Metin hassas bilgi
+    içeriyorsa Jev'e hiç gitmez. Motor elle seçildiyse o motor başa alınır (kaynak "kullanici"), diğerleri yedektir.
     """
-    if not isinstance(metin, str) or not metin.strip():
-        raise IsHatasi("Mesaj boş.")
     kurallar, uyarilar = yonlendirici.kurallari_yukle()
-    # Yazarken otomatik çağrılır: metin hassas bilgi içeriyorsa onay alınmadan Jev'e gitmesin, kural tabanlı kalsın.
     sinif = None
-    if hassas.tara(metin)["kategori"] == "yok":
-        sinif = jev_ile_siniflandir(metin, ayarlari_oku()["ayarlar"])  # ayar dosyası yalnızca okunur
+    if motor_istegi == "otomatik" and hassas.tara(metin)["kategori"] == "yok":
+        sinif = jev_ile_siniflandir(metin, ayarlar)
     sonuc = yonlendirici.oner(metin, kurallar, sinif=sinif, kaynak="jev")
-    kimlikler = sorted({o["site"] for o in sonuc["oneriler"]})
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(kimlikler))) as havuz:
-        listeler = dict(zip(kimlikler, havuz.map(site_modelleri, kimlikler)))
-    for o in sonuc["oneriler"]:
-        liste = listeler[o["site"]]
-        o["model"] = yonlendirici.model_esles(liste["modeller"], o["model_icerir"])
-        if o["model"] is None:
-            o["model_notu"] = liste["sebep"] or f"Menüde \"{o['model_icerir']}\" içeren model bulunamadı"
-    sonuc["uyarilar"] = uyarilar
     _SON_SINIFLANDIRMA.clear()
     _SON_SINIFLANDIRMA.update(tur=sonuc["tur"], tur_ad=sonuc["tur_ad"], zorluk=sonuc["zorluk"],
                               zorluk_ad=sonuc["zorluk_ad"], kaynak=sonuc["kaynak"],
                               zaman=datetime.now().strftime("%H:%M:%S"))
+    adaylar = [{"motor": o["motor"], "sinif": o["sinif"], "sebep": o["sebep"]} for o in sonuc["oneriler"]]
+    if motor_istegi != "otomatik":
+        ad = MOTOR_BILGILERI[motor_istegi][0]
+        ilk = next((a for a in adaylar if a["motor"] == motor_istegi), None) or {"motor": motor_istegi, "sinif": "dengeli"}
+        adaylar = [{**ilk, "sebep": f"{ad} senin seçimin"}] + [a for a in adaylar if a["motor"] != motor_istegi]
+        sonuc["kaynak"] = "kullanici"
+    return sonuc, adaylar, uyarilar
+
+
+def oneri_olustur(metin):
+    """/api/oneri: metni sınıflandırır, tercih sırasındaki her öneriye motorun durumunu ve sınıfa uyan modeli ekler.
+
+    Jev açık ve hazırsa tür ve zorluk Jev'le bulunur (kaynak "jev"); kapalı/hata → kural tabanlı (kaynak "kural").
+    Her öneri: motor, motor_ad, sinif, sinif_ad, sebep, hazir, hazir_sebep, model, model_ad (model yoksa None).
+    """
+    if not isinstance(metin, str) or not metin.strip():
+        raise IsHatasi("Mesaj boş.")
+    ayarlar = ayarlari_oku()["ayarlar"]  # ayar dosyası yalnızca okunur
+    sonuc, _, uyarilar = plan_olustur(metin, ayarlar)
+    durumlar = {d["id"]: d for d in motor_durumlari()}
+    for o in sonuc["oneriler"]:
+        d = durumlar.get(o["motor"]) or {}
+        model = _model_coz(o["motor"], _motor(o["motor"]), o["sinif"], ayarlar)
+        o.update(hazir=bool(d.get("hazir")), hazir_sebep=d.get("sebep", ""),
+                 model=model.get("id") if model else None, model_ad=(model.get("ad") or model.get("id")) if model else None)
+    sonuc["uyarilar"] = uyarilar
     return sonuc
+
+
+# ---------------------------------------------------------------- Tek Asistan: /api/sor akışı
+
+def sor_hazirla(g):
+    """/api/sor gövdesini denetler. Döner: {"metin","motor","model","sohbet","onayli"}; geçersizse IsHatasi (400)."""
+    metin = g.get("metin")
+    if not isinstance(metin, str) or not metin.strip():
+        raise IsHatasi("Mesaj boş.")
+    if len(metin) > SOR_METIN_EN_FAZLA:
+        raise IsHatasi(f"Mesaj en çok {SOR_METIN_EN_FAZLA} karakter olabilir.")
+    motor_istegi = g.get("motor", "otomatik")
+    if motor_istegi is None:
+        motor_istegi = "otomatik"
+    if motor_istegi != "otomatik" and motor_istegi not in yonlendirici.MOTORLAR:
+        raise IsHatasi("Geçersiz motor.")
+    model = g.get("model")
+    if model is not None and not (isinstance(model, str) and len(model) <= 120):
+        raise IsHatasi("Geçersiz model.")
+    sohbet = g.get("sohbet")
+    if sohbet is not None and not (isinstance(sohbet, str) and len(sohbet) <= 80):
+        raise IsHatasi("Geçersiz sohbet.")
+    return {"metin": metin.strip(), "motor": motor_istegi, "model": (model or "").strip() or None,
+            "sohbet": sohbet or None, "onayli": g.get("onayli") is True, "yeniden": g.get("yeniden") is True}
+
+
+def _kisa(metin, sinir):
+    metin = " ".join(str(metin or "").split())
+    return metin if len(metin) <= sinir else metin[:sinir - 1].rstrip() + "…"
+
+
+def transkript_olustur(mesajlar):
+    """Motor değişince yeni motora verilecek kısa özet: son TRANSKRIPT_MESAJ_SAYISI mesaj (yoksa boş metin)."""
+    satirlar = []
+    for m in mesajlar:
+        if m.get("rol") == "asistan":
+            if m.get("metin"):
+                ad = MOTOR_BILGILERI.get(m.get("motor"), (m.get("motor") or "?",))[0]
+                satirlar.append(f"Asistan ({ad}): {m['metin']}")
+        elif m.get("rol") == "kullanici" or "rol" not in m:
+            satirlar.append(f"Kullanıcı: {m.get('metin', '')}")
+            for site, yanit in (m.get("yanitlar") or {}).items():  # eski çoklu pencere kaydı
+                if isinstance(yanit, str) and yanit.strip():
+                    satirlar.append(f"Asistan ({site}): {yanit}")
+    son = satirlar[-TRANSKRIPT_MESAJ_SAYISI:]
+    if not son:
+        return ""
+    govde = "\n".join("- " + _kisa(s, TRANSKRIPT_MESAJ_EN_FAZLA) for s in son)
+    return ("Önceki konuşma özeti (bu sohbet daha önce başka bir asistanla sürdü; yalnızca bağlam olarak kullan, "
+            f"tekrar etme):\n{govde}\n\nYeni mesaj:\n")
+
+
+def _son_asistan_motoru(mesajlar):
+    return next((m.get("motor") for m in reversed(mesajlar) if m.get("rol") == "asistan" and m.get("motor")), None)
+
+
+def _oturum_gecerli(oturum):
+    try:
+        return oturum is not None and len(json.dumps(oturum, ensure_ascii=False)) <= OTURUM_EN_FAZLA
+    except (TypeError, ValueError):
+        return False
+
+
+def _tek_sohbet_hazirla(veri, sohbet_id, metin, yeniden=False):
+    """Sohbeti bulur (yoksa Tek Asistan sohbeti oluşturur) ve kullanıcı mesajını ekler. Döner: sohbet, önceki mesajlar.
+
+    yeniden=True ("Yeniden sor"): sohbetin son kullanıcı mesajı aynı metinse yeni mesaj eklenmez; varsa onun asistan
+    yanıtı silinir ve soru başka bir motora yeniden sorulur. Eşleşmezse normal mesaj gibi eklenir.
+    """
+    sohbet = next((s for s in veri["sohbetler"] if s["id"] == sohbet_id), None) if sohbet_id else None
+    if not sohbet:
+        sohbet = {"id": sohbet_id or datetime.now().strftime("%Y%m%d%H%M%S%f"),
+                  "baslik": metin.strip().splitlines()[0][:48], "zaman": datetime.now().isoformat(timespec="minutes"),
+                  "mesajlar": [], "kip": "tek"}
+        veri["sohbetler"].insert(0, sohbet)
+    mesajlar = sohbet["mesajlar"]
+    if yeniden:
+        if mesajlar and mesajlar[-1].get("rol") == "asistan":
+            soru_sirasi = len(mesajlar) - 2
+        else:
+            soru_sirasi = len(mesajlar) - 1
+        if soru_sirasi >= 0 and mesajlar[soru_sirasi].get("rol") == "kullanici" and mesajlar[soru_sirasi].get("metin") == metin:
+            del mesajlar[soru_sirasi + 1:]
+            sohbet["guncelleme"] = datetime.now().isoformat(timespec="minutes")
+            return sohbet, list(mesajlar[:soru_sirasi])
+    onceki = list(mesajlar)
+    mesajlar.append({"rol": "kullanici", "metin": metin, "zaman": datetime.now().strftime("%H:%M")})
+    sohbet["guncelleme"] = datetime.now().isoformat(timespec="minutes")
+    return sohbet, onceki
+
+
+def _baglam_kaydet(sohbet_id, baglam):
+    """Hafıza OS bağlamını, sohbetin son kullanıcı mesajına ayrı alan olarak yazar (ham mesaj değişmez)."""
+    with KILIT:
+        veri = ayarlari_oku()
+        sohbet = next((s for s in veri["sohbetler"] if s["id"] == sohbet_id), None)
+        if sohbet and sohbet["mesajlar"] and sohbet["mesajlar"][-1].get("rol") == "kullanici":
+            sohbet["mesajlar"][-1]["baglam"] = baglam
+            ayarlari_yaz(veri)
+
+
+def _asistan_kaydet(sohbet_id, kayit, motor_id, oturum):
+    """Asistan mesajını sohbete ekler ve motor oturumunu saklar. Döner: mesajın sırası (sohbet silindiyse None)."""
+    with KILIT:
+        veri = ayarlari_oku()
+        sohbet = next((s for s in veri["sohbetler"] if s["id"] == sohbet_id), None)
+        if not sohbet:
+            return None
+        sohbet["mesajlar"].append(kayit)
+        if motor_id and _oturum_gecerli(oturum):
+            if not isinstance(sohbet.get("motor_oturumlari"), dict):
+                sohbet["motor_oturumlari"] = {}
+            sohbet["motor_oturumlari"][motor_id] = oturum
+        sohbet["guncelleme"] = datetime.now().isoformat(timespec="minutes")
+        ayarlari_yaz(veri)
+        return len(sohbet["mesajlar"]) - 1
+
+
+def sor_durdur(g):
+    """/api/durdur {sohbet}: o sohbette süren yanıtı iptal eder (sohbet verilmezse sürenlerin hepsini)."""
+    sohbet = g.get("sohbet")
+    with _IPTAL_KILIDI:
+        olaylar = [_IPTALLER[sohbet]] if sohbet in _IPTALLER else ([] if sohbet else list(_IPTALLER.values()))
+    for olay in olaylar:
+        olay.set()
+    return {"tamam": True, "durduruldu": bool(olaylar)}
+
+
+def sor_akisi(p):
+    """/api/sor için olay üreteci (NDJSON satırları). Sıra: [onay_gerekli] | secim, [durum], motor olayları, kayit.
+
+    Motor olayları parca / durum / bitti / hata aynen geçer. Her yol sonunda asistan mesajı kaydedilir (hata ya da
+    durdurulmuş yanıt dahil); istemci bağlantıyı koparırsa üreteç kapanır, yanıt iptal edilir ve o ana kadarki metin saklanır.
+    """
+    metin = p["metin"]
+    with KILIT:
+        ayarlar = ayarlari_oku()["ayarlar"]
+    if ayarlar.get("hassas_uyari", True) and not p["onayli"]:  # onay gerekiyorsa hiçbir şey kaydedilmez/gönderilmez
+        tarama = hassas.tara(metin)
+        if tarama["kategori"] != "yok":
+            yield {"tur": "onay_gerekli", "kategori": tarama["kategori"], "aciklama": hassas.uyari_metni(tarama),
+                   "eslesme_sayisi": tarama["eslesme_sayisi"], "kaynak": "kural"}
+            return
+        jev_h = jev_hassas_tara(metin, ayarlar)
+        if jev_h:
+            yield {"tur": "onay_gerekli", **jev_h}
+            return
+    if p["sohbet"]:
+        with _IPTAL_KILIDI:
+            mesgul = p["sohbet"] in _IPTALLER
+        if mesgul:
+            yield {"tur": "hata", "mesaj": "Bu sohbette bir yanıt hâlâ sürüyor; bitmesini bekle ya da Durdur'a bas."}
+            return
+    # Hafıza bağlamı ve yönlendirme (Jev) birbirinden bağımsız ağ/alt süreç işleri: paralel yürütülür.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as havuz:
+        baglam_is = havuz.submit(hafiza_kopru.baglam_ekle, metin) if ayarlar.get("hafiza_ekle", True) else None
+        plan_is = havuz.submit(plan_olustur, metin, ayarlar, p["motor"])
+        gonderilecek, baglam = baglam_is.result() if baglam_is else (metin, None)
+        sonuc, adaylar, _ = plan_is.result()
+    durumlar = {d["id"]: d for d in motor_durumlari()}
+    secilen = next((a for a in adaylar if durumlar[a["motor"]]["hazir"]), None)
+    iptal = threading.Event()
+    with KILIT:  # kullanıcı mesajı akış başlamadan kaydedilir (bağlantı kopsa da geçmişte kalır)
+        veri = ayarlari_oku()
+        sohbet, onceki = _tek_sohbet_hazirla(veri, p["sohbet"], metin, p["yeniden"])
+        sid = sohbet["id"]
+        oturumlar = dict(sohbet.get("motor_oturumlari") or {})
+        son_motor = _son_asistan_motoru(onceki)
+        ayarlari_yaz(veri)
+    if baglam:
+        _baglam_kaydet(sid, baglam)
+    with _IPTAL_KILIDI:
+        _IPTALLER[sid] = iptal
+    try:
+        if not secilen:
+            neden = " ".join(f"{d['ad']}: {d['sebep']}" for d in durumlar.values())
+            hata = f"Hazır bir motor yok. {neden}".strip()
+            sira = _asistan_kaydet(sid, {"rol": "asistan", "metin": "", "hata": hata, "motor": None, "model": None,
+                                         "sure": 0, "zaman": datetime.now().strftime("%H:%M")}, "", None)
+            yield {"tur": "secim", "sohbet": sid, "motor": None, "motor_ad": None, "renk": None, "model": None,
+                   "model_ad": None, "sebep": "Hazır motor yok", "kaynak": sonuc["kaynak"], "yedek": False}
+            yield {"tur": "hata", "mesaj": hata}
+            yield {"tur": "kayit", "sohbet": sid, "mesaj_sira": sira}
+            return
+        mid, d = secilen["motor"], durumlar[secilen["motor"]]
+        m = _motor(mid)
+        model = _model_coz(mid, m, secilen["sinif"], ayarlar, p["model"] if p["motor"] == mid else None)
+        atlanan = [durumlar[a["motor"]] for a in adaylar[:adaylar.index(secilen)]]
+        sebep = secilen["sebep"] + (f" ({atlanan[0]['ad']} hazır değil)" if atlanan else "")
+        yield {"tur": "secim", "sohbet": sid, "motor": mid, "motor_ad": d["ad"], "renk": d["renk"],
+               "model": model.get("id") if model else None,
+               "model_ad": (model.get("ad") or model.get("id")) if model else None,
+               "sinif": secilen["sinif"], "istek_turu": sonuc["tur"], "zorluk": sonuc["zorluk"],
+               "sebep": sebep, "kaynak": sonuc["kaynak"], "yedek": bool(atlanan)}
+        if atlanan:
+            yield {"tur": "durum", "metin": f"{atlanan[0]['ad']} hazır değil, {d['ad']} ile devam ediyorum"}
+        oturum = oturumlar.get(mid)
+        giris = ""
+        if onceki and (son_motor != mid or not oturum):  # yeni motor önceki konuşmayı bilmiyor: kısa transkript ver
+            giris = transkript_olustur(onceki[-TRANSKRIPT_MESAJ_SAYISI * 3:])
+        istem = giris + gonderilecek
+        parcalar, yeni_oturum, bitti, hata = [], oturum, None, None
+        baslangic = time.monotonic()
+        akis = None
+        try:
+            akis = m.sor(istem, oturum=oturum, model=model.get("id") if model else None, sistem=SISTEM_ISTEMI,
+                         calisma_klasoru=None, iptal=iptal)
+            for olay in akis:
+                if not isinstance(olay, dict):
+                    continue
+                tur = olay.get("tur")
+                if tur == "baslangic":
+                    yeni_oturum = olay.get("oturum") or yeni_oturum
+                elif tur == "parca":
+                    parcalar.append(str(olay.get("metin") or ""))
+                elif tur == "bitti":
+                    bitti = olay
+                    yeni_oturum = olay.get("oturum") or yeni_oturum
+                elif tur == "hata":
+                    if olay.get("iptal") and iptal.is_set():
+                        break  # kullanıcı durdurdu: gerçek motorun "İptal edildi." olayı hata sayılmaz (kayıtta durduruldu işaretlenir)
+                    hata = str(olay.get("mesaj") or "Bilinmeyen hata")[:500]
+                elif tur != "durum":
+                    continue
+                yield olay
+                if iptal.is_set():
+                    break
+        except GeneratorExit:
+            iptal.set()  # istemci koptu: motor işi bırakmalı; finally kısmi yanıtı kaydeder
+            raise
+        except Exception as h:  # noqa: BLE001  (MotorHatasi Türkçe mesajını taşır; gerisi kısa kodla)
+            hata = str(h)[:500] if type(h).__name__ == "MotorHatasi" else guvenlik.beklenmeyen_hata("sor/" + mid, h)
+            yield {"tur": "hata", "mesaj": hata}
+        finally:
+            if akis is not None and hasattr(akis, "close"):
+                try:
+                    akis.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            govde = bitti["metin"] if bitti and isinstance(bitti.get("metin"), str) and bitti["metin"] else "".join(parcalar)
+            sure = (bitti or {}).get("sure")
+            kayit = {"rol": "asistan", "metin": govde[:YANIT_KAYIT_SINIRI], "motor": mid,
+                     "model": (bitti or {}).get("model") or (model.get("id") if model else None),
+                     "model_ad": (model.get("ad") or model.get("id")) if model else None,
+                     "sure": sure if isinstance(sure, (int, float)) else round(time.monotonic() - baslangic, 1),
+                     "zaman": datetime.now().strftime("%H:%M")}
+            if hata:
+                kayit["hata"] = hata
+            if iptal.is_set():
+                kayit["durduruldu"] = True
+            try:
+                sira = _asistan_kaydet(sid, kayit, mid, yeni_oturum)
+                if kayit["metin"] and not hata and not iptal.is_set() and ayarlar.get("hafiza_aday", True):
+                    hafiza_kopru.aday_yaz(d["ad"], metin, kayit["metin"])  # Hafıza OS gelen kutusuna aday (yalnızca ekleme)
+            except Exception as h:  # noqa: BLE001
+                sira = None
+                guvenlik.beklenmeyen_hata("sor/kayit", h)
+        yield {"tur": "kayit", "sohbet": sid, "mesaj_sira": sira}
+    finally:
+        with _IPTAL_KILIDI:
+            _IPTALLER.pop(sid, None)
 
 
 def yonlendirme_durumu():
@@ -806,6 +1209,13 @@ def _ayar_dogrula(g, veri):
     for k in AYAR_MANTIKSAL:
         if k in g and not _mantiksal_mi(g[k]):
             raise IsHatasi(f"Geçersiz ayar değeri: {k}.")
+    if "motor_modelleri" in g:
+        mm = g["motor_modelleri"]
+        if not (isinstance(mm, dict) and all(
+                k in yonlendirici.MOTORLAR and isinstance(v, dict) and all(
+                    sk in yonlendirici.SINIFLAR and isinstance(mid, str) and len(mid) <= 120 for sk, mid in v.items())
+                for k, v in mm.items())):
+            raise IsHatasi("Geçersiz ayar değeri: motor_modelleri.")
     if "ad" in g and not (isinstance(g["ad"], str) and len(g["ad"]) <= AD_EN_FAZLA):
         raise IsHatasi(f"Ad en çok {AD_EN_FAZLA} karakter olabilir.")
     if "secili" in g:
@@ -1262,7 +1672,10 @@ class Isleyici(guvenlik.GuvenlikKarisimi, BaseHTTPRequestHandler):
             if yol == "/api/jev-durum":  # anahtar dosyası bulundu mu, model, son çağrı (anahtar değeri yok)
                 return self._json(jev_durumu())
             if yol == "/api/durum":
-                return self._json(durum(ayarlari_oku()))
+                yenile_motor = sorgu.get("motor_yenile", [""])[0] in ("1", "true")
+                return self._json({**durum(ayarlari_oku()), "motorlar": motor_durumlari(yenile_motor)})
+            if yol == "/api/motor-modelleri":
+                return self._json(motor_modelleri())
             if yol == "/api/modeller":
                 return self._json(site_modelleri(sorgu.get("site", [""])[0], sorgu.get("yenile", [""])[0] in ("1", "true")))
             if yol == "/api/yonlendirme":
@@ -1312,6 +1725,8 @@ class Isleyici(guvenlik.GuvenlikKarisimi, BaseHTTPRequestHandler):
         except guvenlik.IstekHatasi as h:
             return self._json({"hata": h.mesaj}, h.kod)
         try:
+            if yol == "/api/sor":  # Tek Asistan: NDJSON akışı (ayar kilidi yalnızca kısa okuma/yazma anlarında alınır)
+                return self._sor(g)
             if yol in KILITSIZ:  # ayar dosyasına dokunmayan, ağ/tarayıcı bekleyen istekler diğerlerini tutmasın
                 return self._json(self._site_islemi(yol, g))
             # Yanıt kaydedilirken sitenin o anki sohbet adresi kilit dışında okunur (tarayıcı beklemesi kilidi tutmasın).
@@ -1328,6 +1743,32 @@ class Isleyici(guvenlik.GuvenlikKarisimi, BaseHTTPRequestHandler):
         except Exception as h:  # noqa: BLE001
             return self._json({"hata": guvenlik.beklenmeyen_hata(yol, h)}, 500)
 
+    def _sor(self, g):
+        """/api/sor: doğrulama hatası akış başlamadan 400 olarak döner; akış başladıktan sonra hatalar "hata" olayıdır."""
+        parametreler = sor_hazirla(g)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+        self.close_connection = True
+        akis = sor_akisi(parametreler)
+        try:
+            for olay in akis:
+                self.wfile.write((json.dumps(olay, ensure_ascii=False) + "\n").encode("utf-8"))
+                self.wfile.flush()
+        except OSError:
+            pass  # istemci koptu (sekme kapandı ya da Durdur): üreteç kapanınca yanıt iptal edilir ve kısmi metin saklanır
+        except Exception as h:  # noqa: BLE001
+            try:
+                kisa = guvenlik.beklenmeyen_hata("/api/sor", h)
+                self.wfile.write((json.dumps({"tur": "hata", "mesaj": kisa}, ensure_ascii=False) + "\n").encode("utf-8"))
+                self.wfile.flush()
+            except OSError:
+                pass
+        finally:
+            akis.close()
+
     def _site_islemi(self, yol, g):
         if yol == "/api/site-ac":
             return site_ac(g.get("id", ""))
@@ -1342,6 +1783,8 @@ class Isleyici(guvenlik.GuvenlikKarisimi, BaseHTTPRequestHandler):
             return oneri_olustur(g.get("metin"))
         if yol == "/api/yonlendirme-ac":
             return yonlendirme_dosyasini_ac()
+        if yol == "/api/durdur":  # Tek Asistan: süren yanıtı iptal et
+            return sor_durdur(g)
         if yol == "/api/yanit-puanla":  # ortak sohbette bütün site yanıtları bitince (ayar: jev_yanit_puanla)
             return yanit_puanla(g)
         raise IsHatasi("Bilinmeyen istek.")

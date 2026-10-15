@@ -1,6 +1,7 @@
 """masaustu_sunucu.py'nin site mantığı için hızlı testler: tarayıcıya ve ekrana dokunmaz (sahte bağlantılarla)."""
 import json
 import sys
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -634,45 +635,531 @@ class HttpTabani(unittest.TestCase):
 
 HAFIZASIZ = {"hafiza_ekle": False, "hafiza_aday": False}  # bu testler Hafıza OS kasasına dokunmasın
 
-MODEL_LISTELERI = {
-    "gemini": {"modeller": [{"id": "g1", "ad": "Gemini 3 Flash", "secili": True},
-                            {"id": "g2", "ad": "Gemini 3 Pro", "secili": False}], "sebep": ""},
-    "chatgpt": {"modeller": [{"id": "c1", "ad": "GPT-5 mini", "secili": False}], "sebep": ""},
-    "claude": {"modeller": [], "sebep": "Claude penceresi kapalı"},
+# ---------------------------------------------------------------- Tek Asistan: sahte motorlar paketi
+# `motorlar` paketi başka bir geliştirme kolunda yazılıyor; bu testler gerçek pakete ve gerçek komut satırı araçlarına
+# hiç dokunmaz: sys.modules'a sahte bir paket konur (sözleşme: MOTORLAR, motor(id), MotorHatasi).
+
+MODELLER = {
+    "claude": [{"id": "claude-haiku", "ad": "Claude Haiku", "sinif": "hizli"},
+               {"id": "claude-sonnet", "ad": "Claude Sonnet 5.5", "sinif": "dengeli"},
+               {"id": "claude-opus", "ad": "Claude Opus", "sinif": "guclu"}],
+    "codex": [{"id": "gpt-mini", "ad": "GPT mini", "sinif": "hizli"}, {"id": "gpt", "ad": "GPT", "sinif": "dengeli"},
+              {"id": "gpt-pro", "ad": "GPT pro", "sinif": "guclu"}],
+    "gemini": [{"id": "gemini-flash", "ad": "Gemini Flash", "sinif": "hizli"},
+               {"id": "gemini-pro", "ad": "Gemini Pro", "sinif": "dengeli"},
+               {"id": "gemini-ultra", "ad": "Gemini Ultra", "sinif": "guclu"}],
 }
 
 
-class OneriHttpTesti(HttpTabani):
-    """/api/oneri, /api/modeller ve /api/yonlendirme."""
+class SahteMotor:
+    """motorlar sözleşmesini taklit eder: id, ad, renk, hazir_mi(), modeller(), sor(...) -> olay üreteci."""
 
-    def sahte_modeller(self, site_id, yenile=False):
-        return {"site": site_id, **MODEL_LISTELERI[site_id]}
+    def __init__(self, kimlik, ad, renk, hazir=True, giris=True, parcalar=None, yavas=False):
+        self.id, self.ad, self.renk = kimlik, ad, renk
+        self.hazir, self.giris, self.parcalar, self.yavas = hazir, giris, parcalar or ["Merhaba ", f"ben {kimlik}."], yavas
+        self.cagrilar, self.hazir_mi_sayisi, self.sayac = [], 0, 0
+        self.hata, self.istisna = None, None
 
-    def test_oneri_siniflandirir_ve_model_eslestirir(self):
-        with mock.patch.object(ms, "site_modelleri", self.sahte_modeller):
-            kod, v = self.post("/api/oneri", {"metin": "Bu makaleyi özetle"})
+    def hazir_mi(self):
+        self.hazir_mi_sayisi += 1
+        return {"hazir": self.hazir, "sebep": "" if self.hazir else f"{self.ad} kurulu değil", "surum": "1.2.3",
+                "giris": self.giris}
+
+    def modeller(self):
+        return MODELLER[self.id]
+
+    def sor(self, istem, oturum=None, model=None, sistem=None, calisma_klasoru=None, iptal=None):
+        self.cagrilar.append({"istem": istem, "oturum": oturum, "model": model, "sistem": sistem,
+                              "calisma_klasoru": calisma_klasoru})
+        self.sayac += 1
+        yeni = f"{self.id}-oturum-{self.sayac}" if oturum is None else oturum
+        yield {"tur": "baslangic", "oturum": yeni}
+        if self.istisna:
+            raise self.istisna
+        if self.hata:
+            yield {"tur": "hata", "mesaj": self.hata}
+            return
+        verilen = []
+        for parca in self.parcalar:
+            if iptal is not None and iptal.is_set():
+                return
+            verilen.append(parca)
+            yield {"tur": "parca", "metin": parca}
+            if self.yavas:
+                if iptal is not None:
+                    iptal.wait(0.05)
+                else:
+                    time.sleep(0.05)
+        while self.yavas == "bekle" and iptal is not None and not iptal.wait(0.05):
+            pass
+        if iptal is not None and iptal.is_set():
+            return
+        yield {"tur": "bitti", "oturum": yeni, "metin": "".join(verilen), "model": model or f"{self.id}-varsayilan",
+               "sure": 0.25}
+
+
+class MotorHatasi(Exception):
+    pass
+
+
+def sahte_motorlar():
+    return {"claude": SahteMotor("claude", "Claude", "#d97757"),
+            "codex": SahteMotor("codex", "Codex (ChatGPT)", "#10a37f"),
+            "gemini": SahteMotor("gemini", "Gemini", "#4285f4")}
+
+
+def sahte_paket(motorlar):
+    import types
+    paket = types.ModuleType("motorlar")
+    paket.MOTORLAR = motorlar
+    paket.MotorHatasi = MotorHatasi
+
+    def motor(kimlik):
+        if kimlik not in motorlar:
+            raise MotorHatasi(f"Bilinmeyen motor: {kimlik}")
+        return motorlar[kimlik]
+    paket.motor = motor
+    return paket
+
+
+class MotorluHttpTabani(HttpTabani):
+    """HttpTabani + sahte motorlar paketi (sys.modules). Motor durumu önbelleği ve iptal kayıtları temizlenir."""
+
+    def setUp(self):
+        super().setUp()
+        self.motorlar = sahte_motorlar()
+        yama = mock.patch.dict(sys.modules, {"motorlar": sahte_paket(self.motorlar)})
+        yama.start()
+        self.addCleanup(yama.stop)
+        self.motor_onbellegini_temizle()
+        self.addCleanup(self.motor_onbellegini_temizle)
+        ms._IPTALLER.clear()
+        ms.ayarlari_yaz({"ayarlar": dict(HAFIZASIZ)})
+
+    @staticmethod
+    def motor_onbellegini_temizle():
+        ms._MOTOR_ONBELLEGI.update(zaman=0.0, liste=None)
+
+    def sor(self, govde, belirtec=True):
+        """POST /api/sor: (HTTP kodu, olay listesi). Hata gövdesi tek elemanlı liste olarak döner."""
+        import urllib.error
+        import urllib.request
+        basliklar = {"Content-Type": "application/json"}
+        if belirtec:
+            basliklar["X-YZ-Token"] = ms.BELIRTEC
+        talep = urllib.request.Request(f"http://127.0.0.1:{self.sunucu.server_port}/api/sor", json.dumps(govde).encode(),
+                                       headers=basliklar, method="POST")
+        acici = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        try:
+            with acici.open(talep, timeout=20) as y:
+                return y.status, [json.loads(s) for s in y.read().decode("utf-8").splitlines() if s.strip()]
+        except urllib.error.HTTPError as h:
+            return h.code, [json.loads(h.read().decode("utf-8"))]
+
+    def sohbet(self, sohbet_id):
+        return next(s for s in ms.ayarlari_oku()["sohbetler"] if s["id"] == sohbet_id)
+
+    @staticmethod
+    def turler(olaylar):
+        return [o["tur"] for o in olaylar]
+
+
+class TekAsistanAkisTesti(MotorluHttpTabani):
+    """POST /api/sor: akış sırası, hassas onay, hafıza bağlamı, yedek motor, oturum sürekliliği, durdurma, kayıt."""
+
+    def test_akis_sirasi_ve_kayit(self):
+        kod, o = self.sor({"metin": "Merhaba nasılsın"})   # sohbet/basit: ilk tercih gemini (hızlı)
+        self.assertEqual(kod, 200)
+        self.assertEqual(self.turler(o), ["secim", "baslangic", "parca", "parca", "bitti", "kayit"])
+        secim = o[0]
+        self.assertEqual((secim["motor"], secim["motor_ad"], secim["renk"]), ("gemini", "Gemini", "#4285f4"))
+        self.assertEqual((secim["model"], secim["model_ad"], secim["sinif"]), ("gemini-flash", "Gemini Flash", "hizli"))
+        self.assertEqual((secim["kaynak"], secim["yedek"]), ("kural", False))
+        self.assertIn("sebep", secim)
+        self.assertEqual("".join(x["metin"] for x in o if x["tur"] == "parca"), "Merhaba ben gemini.")
+        self.assertEqual(o[4]["model"], "gemini-flash")
+        kayit = o[-1]
+        self.assertEqual(kayit["mesaj_sira"], 1)
+        self.assertEqual(secim["sohbet"], kayit["sohbet"])
+        m = self.motorlar["gemini"].cagrilar
+        self.assertEqual(len(m), 1)
+        self.assertEqual((m[0]["istem"], m[0]["oturum"], m[0]["model"]), ("Merhaba nasılsın", None, "gemini-flash"))
+        self.assertIn("Türkçe", m[0]["sistem"])
+        self.assertEqual(self.motorlar["claude"].cagrilar, [])
+        s = self.sohbet(kayit["sohbet"])
+        self.assertEqual(s["baslik"], "Merhaba nasılsın")
+        self.assertEqual([x["rol"] for x in s["mesajlar"]], ["kullanici", "asistan"])
+        asistan = s["mesajlar"][1]
+        self.assertEqual((asistan["metin"], asistan["motor"], asistan["model"]), ("Merhaba ben gemini.", "gemini", "gemini-flash"))
+        self.assertEqual(asistan["sure"], 0.25)
+        self.assertEqual(asistan["model_ad"], "Gemini Flash")
+        self.assertEqual(s["motor_oturumlari"], {"gemini": "gemini-oturum-1"})
+
+    def test_otomatik_isin_turune_gore_motor_secer(self):
+        _, o = self.sor({"metin": "Python fonksiyonundaki hatayı bul"})    # kod/basit → claude hızlı
+        self.assertEqual((o[0]["motor"], o[0]["sinif"], o[0]["istek_turu"]), ("claude", "hizli", "kod"))
+        _, o = self.sor({"metin": "Bu makaleyi özetle: " + "a" * 400 + ". Önce oku, sonra özetle."})
+        self.assertEqual(o[0]["motor"], "gemini")                           # özet → gemini hızlı
+        _, o = self.sor({"metin": "Ayrıntılı bir strateji planı hazırla " + "a" * 300})   # sohbet/zor → claude güçlü
+        self.assertEqual((o[0]["motor"], o[0]["model"]), ("claude", "claude-opus"))
+
+    def test_motor_elle_secilirse_o_motor_kullanilir(self):
+        _, o = self.sor({"metin": "Merhaba", "motor": "codex"})
+        self.assertEqual((o[0]["motor"], o[0]["kaynak"], o[0]["yedek"]), ("codex", "kullanici", False))
+        self.assertEqual(self.motorlar["codex"].cagrilar[0]["model"], "gpt-mini")   # sohbet/basit tercihinde codex hızlı
+        self.assertEqual(o[0]["sinif"], "hizli")
+
+    def test_elle_secilen_modelin_kimligi_gecer(self):
+        _, o = self.sor({"metin": "Merhaba", "motor": "claude", "model": "claude-opus"})
+        self.assertEqual((o[0]["model"], self.motorlar["claude"].cagrilar[0]["model"]), ("claude-opus", "claude-opus"))
+        _, o = self.sor({"metin": "Merhaba", "motor": "claude", "model": "olmayan-model"})   # listede yok: sınıfa göre
+        self.assertEqual(o[0]["model"], "claude-haiku")
+
+    def test_tercih_edilen_model_ayardan_gelir(self):
+        ms.ayarlari_yaz({"ayarlar": {**HAFIZASIZ, "motor_modelleri": {"gemini": {"hizli": "gemini-pro"}}}})
+        _, o = self.sor({"metin": "Merhaba nasılsın"})
+        self.assertEqual((o[0]["motor"], o[0]["model"]), ("gemini", "gemini-pro"))
+
+    def test_hassas_metin_tek_olay_ve_kayit_yok(self):
+        anahtar = "bu anahtarı kullan: sk-" + "abcdefghijklmnop1234567890"
+        kod, o = self.sor({"metin": anahtar})
+        self.assertEqual(kod, 200)
+        self.assertEqual(self.turler(o), ["onay_gerekli"])
+        self.assertEqual((o[0]["kategori"], o[0]["aciklama"], o[0]["kaynak"]), ("api_anahtari", "bir API anahtarı", "kural"))
+        self.assertEqual(ms.ayarlari_oku()["sohbetler"], [])
+        for m in self.motorlar.values():
+            self.assertEqual(m.cagrilar, [])
+        _, o = self.sor({"metin": anahtar, "onayli": True})
+        self.assertEqual(o[0]["tur"], "secim")
+        self.assertEqual(o[-1]["tur"], "kayit")
+        _, o = self.sor({"metin": anahtar, "onayli": "evet"})        # yalnızca tam true sayılır
+        self.assertEqual(self.turler(o), ["onay_gerekli"])
+
+    def test_hassas_uyari_kapaliysa_onay_istenmez(self):
+        ms.ayarlari_yaz({"ayarlar": {**HAFIZASIZ, "hassas_uyari": False}})
+        _, o = self.sor({"metin": "şifre: Abc12345 ile giriş yap"})
+        self.assertEqual(o[0]["tur"], "secim")
+
+    def test_hafiza_baglami_motora_gider_ve_ayri_kaydedilir(self):
+        ms.ayarlari_yaz({"ayarlar": {"hafiza_ekle": True, "hafiza_aday": False}})
+        baglam = {"metin": "Yusuf çay sever", "mod": "yerel", "karakter": 15, "kimlikler": []}
+        with mock.patch.object(ms.hafiza_kopru, "baglam_ekle",
+                               lambda metin: (f"BAĞLAM: {baglam['metin']}\n---\n{metin}", baglam)):
+            _, o = self.sor({"metin": "Ne içeyim?", "motor": "claude"})
+        self.assertEqual(self.motorlar["claude"].cagrilar[0]["istem"], "BAĞLAM: Yusuf çay sever\n---\nNe içeyim?")
+        k = self.sohbet(o[-1]["sohbet"])["mesajlar"][0]
+        self.assertEqual((k["metin"], k["baglam"]), ("Ne içeyim?", baglam))   # ham mesaj ve bağlam ayrı alanlarda
+
+    def test_hafiza_kapaliysa_baglam_aranmaz(self):
+        with mock.patch.object(ms.hafiza_kopru, "baglam_ekle") as ekle:
+            self.sor({"metin": "Merhaba", "motor": "claude"})
+        ekle.assert_not_called()
+
+    def test_hafiza_adayi_yazilir(self):
+        ms.ayarlari_yaz({"ayarlar": {"hafiza_ekle": False, "hafiza_aday": True}})
+        with mock.patch.object(ms.hafiza_kopru, "aday_yaz") as yaz:
+            self.sor({"metin": "Merhaba", "motor": "claude"})
+        yaz.assert_called_once_with("Claude", "Merhaba", "Merhaba ben claude.")
+
+    def test_hazir_olmayan_motor_yerine_siradaki_gecer(self):
+        self.motorlar["gemini"].hazir = False
+        _, o = self.sor({"metin": "Merhaba nasılsın"})
+        self.assertEqual(self.turler(o)[:3], ["secim", "durum", "baslangic"])
+        self.assertEqual((o[0]["motor"], o[0]["yedek"]), ("codex", True))
+        self.assertEqual(o[1]["metin"], "Gemini hazır değil, Codex (ChatGPT) ile devam ediyorum")
+        self.assertEqual(self.motorlar["gemini"].cagrilar, [])
+        self.assertEqual(len(self.motorlar["codex"].cagrilar), 1)
+
+    def test_elle_secilen_motor_hazir_degilse_de_yedege_gecilir(self):
+        self.motorlar["claude"].hazir = False
+        _, o = self.sor({"metin": "Merhaba", "motor": "claude"})
+        self.assertEqual(o[0]["yedek"], True)
+        self.assertEqual(o[1]["metin"], f"Claude hazır değil, {o[0]['motor_ad']} ile devam ediyorum")
+
+    def test_hic_motor_hazir_degilse_hata_ve_kayit(self):
+        for m in self.motorlar.values():
+            m.hazir, m.giris = False, False
+        kod, o = self.sor({"metin": "Merhaba"})
+        self.assertEqual(kod, 200)
+        self.assertEqual(self.turler(o), ["secim", "hata", "kayit"])
+        self.assertIsNone(o[0]["motor"])
+        self.assertIn("Hazır bir motor yok", o[1]["mesaj"])
+        self.assertIn("claude", o[1]["mesaj"])      # giriş talimatı eklenir
+        s = self.sohbet(o[-1]["sohbet"])
+        self.assertEqual([x["rol"] for x in s["mesajlar"]], ["kullanici", "asistan"])
+        self.assertEqual(s["mesajlar"][1]["hata"], o[1]["mesaj"])
+
+    def test_motorlar_paketi_yoksa_motorlar_hazir_degil(self):
+        with mock.patch.dict(sys.modules, {"motorlar": None}):
+            self.motor_onbellegini_temizle()
+            kod, o = self.sor({"metin": "Merhaba"})
+            _, d = self.get("/api/durum")
+        self.assertEqual(kod, 200)
+        self.assertEqual(self.turler(o), ["secim", "hata", "kayit"])
+        self.assertIn("Motorlar hazır değil", o[1]["mesaj"])
+        self.assertEqual([m["id"] for m in d["motorlar"]], ["claude", "codex", "gemini"])
+        self.assertFalse(any(m["hazir"] for m in d["motorlar"]))
+        self.assertIn("Motorlar hazır değil", d["motorlar"][0]["sebep"])
+
+    def test_oturum_sureklilgi_ayni_motorda(self):
+        _, o1 = self.sor({"metin": "ilk soru", "motor": "claude"})
+        sid = o1[-1]["sohbet"]
+        _, o2 = self.sor({"metin": "ikinci soru", "motor": "claude", "sohbet": sid})
+        c = self.motorlar["claude"].cagrilar
+        self.assertEqual((c[0]["oturum"], c[1]["oturum"]), (None, "claude-oturum-1"))
+        self.assertEqual(c[1]["istem"], "ikinci soru", "aynı motorun oturumu konuşmayı biliyor: transkript eklenmez")
+        self.assertEqual(o2[-1]["sohbet"], sid)
+        self.assertEqual(o2[-1]["mesaj_sira"], 3)
+        s = self.sohbet(sid)
+        self.assertEqual([x["rol"] for x in s["mesajlar"]], ["kullanici", "asistan", "kullanici", "asistan"])
+        self.assertEqual(s["motor_oturumlari"], {"claude": "claude-oturum-1"})
+
+    def test_motor_degisince_transkript_eklenir(self):
+        _, o1 = self.sor({"metin": "ilk soru", "motor": "claude"})
+        sid = o1[-1]["sohbet"]
+        _, o2 = self.sor({"metin": "devam et", "motor": "codex", "sohbet": sid})
+        istem = self.motorlar["codex"].cagrilar[0]["istem"]
+        self.assertTrue(istem.startswith("Önceki konuşma özeti"))
+        self.assertIn("- Kullanıcı: ilk soru", istem)
+        self.assertIn("- Asistan (Claude): Merhaba ben claude.", istem)
+        self.assertTrue(istem.endswith("Yeni mesaj:\ndevam et"))
+        self.assertIsNone(self.motorlar["codex"].cagrilar[0]["oturum"])
+        _, o3 = self.sor({"metin": "bir daha", "motor": "codex", "sohbet": sid})
+        c = self.motorlar["codex"].cagrilar[1]
+        self.assertEqual((c["istem"], c["oturum"]), ("bir daha", "codex-oturum-1"))
+        # Claude'a geri dönüş: kendi oturumu var ama araya Codex girdi, yine de özet verilir
+        self.sor({"metin": "claude'a dön", "motor": "claude", "sohbet": sid})
+        c = self.motorlar["claude"].cagrilar[1]
+        self.assertEqual(c["oturum"], "claude-oturum-1")
+        self.assertTrue(c["istem"].startswith("Önceki konuşma özeti"))
+        self.assertEqual(self.sohbet(sid)["motor_oturumlari"], {"claude": "claude-oturum-1", "codex": "codex-oturum-1"})
+
+    def test_transkript_son_6_mesajla_sinirli(self):
+        mesajlar = []
+        for i in range(5):
+            mesajlar += [{"rol": "kullanici", "metin": f"soru {i}"}, {"rol": "asistan", "metin": f"yanıt {i}", "motor": "claude"}]
+        t = ms.transkript_olustur(mesajlar)
+        self.assertEqual(t.count("\n- "), 6)           # son 6 mesaj, her biri "- " ile başlar
+        self.assertIn("- Kullanıcı: soru 2", t)
+        self.assertNotIn("soru 1", t)
+        self.assertEqual(ms.transkript_olustur([]), "")
+        eski = ms.transkript_olustur([{"metin": "eski soru", "yanitlar": {"gemini": "eski yanıt"}, "gonderilen": []}])
+        self.assertIn("Kullanıcı: eski soru", eski)
+        self.assertIn("Asistan (gemini): eski yanıt", eski)
+
+    def test_yeniden_sor_son_yaniti_degistirir(self):
+        _, o1 = self.sor({"metin": "ilk soru", "motor": "claude"})
+        sid = o1[-1]["sohbet"]
+        _, o2 = self.sor({"metin": "ilk soru", "motor": "codex", "sohbet": sid, "yeniden": True})
+        self.assertEqual((o2[0]["motor"], o2[-1]["mesaj_sira"]), ("codex", 1))
+        s = self.sohbet(sid)
+        self.assertEqual([(m["rol"], m.get("motor")) for m in s["mesajlar"]], [("kullanici", None), ("asistan", "codex")])
+        self.assertEqual(self.motorlar["codex"].cagrilar[0]["istem"], "ilk soru", "silinen yanıt özete girmez")
+        # soru eşleşmezse normal yeni mesaj gibi eklenir
+        self.sor({"metin": "başka soru", "motor": "codex", "sohbet": sid, "yeniden": True})
+        self.assertEqual(len(self.sohbet(sid)["mesajlar"]), 4)
+
+    def test_motor_hatasi_olayi_aynen_gecer_ve_kaydedilir(self):
+        self.motorlar["claude"].hata = "Claude oturumu süresi dolmuş"
+        _, o = self.sor({"metin": "Merhaba", "motor": "claude"})
+        self.assertEqual(self.turler(o), ["secim", "baslangic", "hata", "kayit"])
+        self.assertEqual(o[2]["mesaj"], "Claude oturumu süresi dolmuş")
+        a = self.sohbet(o[-1]["sohbet"])["mesajlar"][1]
+        self.assertEqual((a["hata"], a["metin"], a["motor"]), ("Claude oturumu süresi dolmuş", "", "claude"))
+
+    def test_motor_istisnasi_hata_olayina_cevrilir(self):
+        self.motorlar["claude"].istisna = MotorHatasi("Claude komutu bulunamadı")
+        _, o = self.sor({"metin": "Merhaba", "motor": "claude"})
+        self.assertEqual(self.turler(o)[-2:], ["hata", "kayit"])
+        self.assertEqual(o[-2]["mesaj"], "Claude komutu bulunamadı")
+        self.motorlar["claude"].istisna = ValueError("gizli iç ayrıntı")
+        _, o = self.sor({"metin": "Merhaba", "motor": "claude"})
+        self.assertEqual(o[-2]["tur"], "hata")
+        self.assertNotIn("gizli iç ayrıntı", o[-2]["mesaj"])
+
+    def test_dogrulama_hatalari_400(self):
+        for g in ({}, {"metin": ""}, {"metin": "   "}, {"metin": 5}, {"metin": "x", "motor": "yok"},
+                  {"metin": "x", "motor": 3}, {"metin": "x", "model": 5}, {"metin": "x", "sohbet": 5},
+                  {"metin": "x" * (ms.SOR_METIN_EN_FAZLA + 1)}):
+            with self.subTest(g=str(g)[:40]):
+                kod, o = self.sor(g)
+                self.assertEqual(kod, 400)
+                self.assertIn("hata", o[0])
+        self.assertEqual(self.sor({"metin": "x", "motor": None})[0], 200)    # null = otomatik
+
+    def test_belirtecsiz_403(self):
+        kod, _ = self.sor({"metin": "Merhaba"}, belirtec=False)
+        self.assertEqual(kod, 403)
+        for m in self.motorlar.values():
+            self.assertEqual(m.cagrilar, [])
+
+    def test_ayni_sohbette_ikinci_istek_reddedilir(self):
+        ms._IPTALLER["mesgul-sohbet"] = threading.Event()
+        ms.ayarlari_yaz({"ayarlar": dict(HAFIZASIZ), "sohbetler": [{"id": "mesgul-sohbet", "baslik": "x", "mesajlar": []}]})
+        _, o = self.sor({"metin": "Merhaba", "sohbet": "mesgul-sohbet"})
+        self.assertEqual(self.turler(o), ["hata"])
+        self.assertIn("sürüyor", o[0]["mesaj"])
+        self.assertEqual(self.sohbet("mesgul-sohbet")["mesajlar"], [])
+
+    def canli_istek(self, govde):
+        import http.client
+        baglanti = http.client.HTTPConnection("127.0.0.1", self.sunucu.server_port, timeout=15)
+        baglanti.request("POST", "/api/sor", json.dumps(govde), {"Content-Type": "application/json", "X-YZ-Token": ms.BELIRTEC})
+        return baglanti, baglanti.getresponse()
+
+    def test_durdur(self):
+        self.motorlar["claude"].parcalar = ["bir ", "iki ", "üç "]
+        self.motorlar["claude"].yavas = "bekle"        # parçaları verir, sonra iptali bekler
+        baglanti, yanit = self.canli_istek({"metin": "uzun iş", "motor": "claude"})
+        self.addCleanup(baglanti.close)
+        secim = json.loads(yanit.readline())
+        self.assertEqual(secim["tur"], "secim")
+        olaylar = [secim]
+        while True:       # üç parça gelene kadar oku
+            olaylar.append(json.loads(yanit.readline()))
+            if sum(1 for x in olaylar if x["tur"] == "parca") == 3:
+                break
+        kod, d = self.post("/api/durdur", {"sohbet": secim["sohbet"]})
+        self.assertEqual((kod, d), (200, {"tamam": True, "durduruldu": True}))
+        kalan = [json.loads(s) for s in yanit.read().decode("utf-8").splitlines() if s.strip()]
+        self.assertEqual(kalan[-1]["tur"], "kayit")
+        a = self.sohbet(secim["sohbet"])["mesajlar"][1]
+        self.assertTrue(a["durduruldu"])
+        self.assertEqual(a["metin"], "bir iki üç ")                # kısmi yanıt saklanır
+        self.assertEqual(ms._IPTALLER, {})
+        self.assertEqual(self.post("/api/durdur", {"sohbet": secim["sohbet"]})[1], {"tamam": True, "durduruldu": False})
+
+    def test_istemci_kopunca_yanit_iptal_edilir_ve_kismi_metin_saklanir(self):
+        import socket
+        import struct
+        self.motorlar["claude"].parcalar = [f"p{i} " for i in range(400)]
+        self.motorlar["claude"].yavas = True
+        govde = json.dumps({"metin": "uzun iş", "motor": "claude"}).encode()
+        istek = (f"POST /api/sor HTTP/1.1\r\nHost: 127.0.0.1:{self.sunucu.server_port}\r\nContent-Type: application/json\r\n"
+                 f"X-YZ-Token: {ms.BELIRTEC}\r\nContent-Length: {len(govde)}\r\n\r\n").encode() + govde
+        soket = socket.create_connection(("127.0.0.1", self.sunucu.server_port), timeout=10)
+        self.addCleanup(soket.close)
+        soket.sendall(istek)
+        gelen = b""
+        while gelen.count(b'"tur": "parca"') < 1:   # ilk parça gelene kadar oku
+            gelen += soket.recv(4096)
+        secim = json.loads(gelen.split(b"\r\n\r\n", 1)[1].splitlines()[0])
+        soket.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))   # sekme kapandı: bağlantı sıfırlanır
+        soket.close()
+        bitis = time.monotonic() + 8
+        mesajlar = []
+        while time.monotonic() < bitis:
+            s = next((x for x in ms.ayarlari_oku()["sohbetler"] if x["id"] == secim["sohbet"]), None)
+            mesajlar = s["mesajlar"] if s else []
+            if len(mesajlar) == 2:
+                break
+            time.sleep(0.1)
+        self.assertEqual(len(mesajlar), 2, "kopan bağlantıda yanıt kaydedilmeli")
+        self.assertTrue(mesajlar[1]["durduruldu"])
+        self.assertTrue(mesajlar[1]["metin"].startswith("p0 "))
+        self.assertLess(len(mesajlar[1]["metin"]), 400 * 4)
+        self.assertEqual(ms._IPTALLER, {})
+
+    def test_durdur_sohbet_vermeden_hepsini_durdurur(self):
+        olay = threading.Event()
+        ms._IPTALLER["a"] = olay
+        self.assertEqual(self.post("/api/durdur", {})[1], {"tamam": True, "durduruldu": True})
+        self.assertTrue(olay.is_set())
+        ms._IPTALLER.clear()
+        self.assertEqual(self.post("/api/durdur", {})[1]["durduruldu"], False)
+
+
+class TekAsistanDurumTesti(MotorluHttpTabani):
+    """/api/durum "motorlar", /api/motor-modelleri, /api/ayar şeması, /api/oneri (yeni biçim)."""
+
+    def test_durum_motorlar_alanlari(self):
+        self.motorlar["codex"].hazir, self.motorlar["codex"].giris = False, False
+        self.motorlar["gemini"].hazir, self.motorlar["gemini"].giris = False, None
+        kod, d = self.get("/api/durum")
+        self.assertEqual(kod, 200)
+        self.assertEqual([m["id"] for m in d["motorlar"]], ["claude", "codex", "gemini"])
+        claude, codex, gemini = d["motorlar"]
+        self.assertEqual(set(claude), {"id", "ad", "renk", "hazir", "sebep", "giris", "surum"})
+        self.assertEqual((claude["ad"], claude["renk"], claude["hazir"], claude["giris"], claude["surum"]),
+                         ("Claude", "#d97757", True, True, "1.2.3"))
+        self.assertFalse(codex["hazir"])
+        self.assertIn("codex login", codex["sebep"])        # giriş talimatı sebepte
+        self.assertFalse(gemini["hazir"])
+        self.assertEqual(gemini["sebep"], "Gemini kurulu değil")
+        self.assertIn("programlar", d)
+        self.assertIn("siteler", d)
+
+    def test_durum_60_sn_onbellek_ve_yenile(self):
+        self.get("/api/durum")
+        self.get("/api/durum")
+        self.assertEqual(self.motorlar["claude"].hazir_mi_sayisi, 1)
+        self.get("/api/durum?motor_yenile=1")
+        self.assertEqual(self.motorlar["claude"].hazir_mi_sayisi, 2)
+        ms._MOTOR_ONBELLEGI["zaman"] -= ms.MOTOR_ONBELLEK_SURESI + 1
+        self.get("/api/durum")
+        self.assertEqual(self.motorlar["claude"].hazir_mi_sayisi, 3)
+
+    def test_hazir_mi_istisnasi_hazir_degil_sayilir(self):
+        def bozuk():
+            raise RuntimeError("beklenmedik")
+        self.motorlar["claude"].hazir_mi = bozuk
+        _, d = self.get("/api/durum")
+        self.assertFalse(d["motorlar"][0]["hazir"])
+        self.assertIn("Durum okunamadı", d["motorlar"][0]["sebep"])
+        self.assertTrue(d["motorlar"][1]["hazir"])
+
+    def test_motor_modelleri_ucu(self):
+        kod, v = self.get("/api/motor-modelleri")
+        self.assertEqual(kod, 200)
+        self.assertEqual(set(v), {"claude", "codex", "gemini"})
+        self.assertEqual(v["claude"][1], {"id": "claude-sonnet", "ad": "Claude Sonnet 5.5", "sinif": "dengeli"})
+
+    def test_motor_ayarlari_sema(self):
+        a = ms.ayarlari_oku()["ayarlar"]
+        self.assertEqual((a["varsayilan_motor"], a["motor_modelleri"]), ("otomatik", {}))
+        self.assertEqual(self.post("/api/ayar", {"varsayilan_motor": "codex",
+                                                 "motor_modelleri": {"claude": {"hizli": "claude-haiku"}}})[0], 200)
+        a = ms.ayarlari_oku()["ayarlar"]
+        self.assertEqual((a["varsayilan_motor"], a["motor_modelleri"]), ("codex", {"claude": {"hizli": "claude-haiku"}}))
+        for g in ({"varsayilan_motor": "yok"}, {"varsayilan_motor": 5}, {"motor_modelleri": []},
+                  {"motor_modelleri": {"yok": {}}}, {"motor_modelleri": {"claude": {"cok": "x"}}},
+                  {"motor_modelleri": {"claude": {"hizli": 5}}}, {"motor_modelleri": {"claude": []}}):
+            with self.subTest(g=g):
+                self.assertEqual(self.post("/api/ayar", g)[0], 400)
+
+    def test_varsayilan_ayar_ortak_sozlugu_bozmaz(self):
+        a = ms.ayarlari_oku()
+        a["ayarlar"]["motor_modelleri"]["claude"] = {"hizli": "x"}
+        self.assertEqual(ms.VARSAYILAN_AYARLAR["motor_modelleri"], {})
+
+
+class OneriHttpTesti(MotorluHttpTabani):
+    """/api/oneri (motor + sınıf), /api/yonlendirme ve eski /api/modeller."""
+
+    def test_oneri_siniflandirir_ve_model_secer(self):
+        self.motorlar["codex"].hazir = False
+        kod, v = self.post("/api/oneri", {"metin": "Bu makaleyi özetle"})
         self.assertEqual(kod, 200)
         self.assertEqual((v["tur"], v["zorluk"], v["kaynak"]), ("ozet", "basit", "kural"))
         o = v["oneriler"]
-        self.assertEqual([x["site"] for x in o], ["gemini", "chatgpt", "claude"])
-        self.assertEqual(o[0]["model"], "Gemini 3 Flash")      # "flash" canlı menüden bulundu
-        self.assertEqual(o[1]["model"], "GPT-5 mini")          # "mini"
-        self.assertIsNone(o[2]["model"])                       # menü okunamadı: yalnızca site önerilir
-        self.assertEqual(o[2]["model_notu"], "Claude penceresi kapalı")
+        self.assertEqual([x["motor"] for x in o], ["gemini", "claude", "codex"])     # özet: gemini › claude › codex
+        self.assertEqual((o[0]["sinif"], o[0]["model"], o[0]["model_ad"]), ("hizli", "gemini-flash", "Gemini Flash"))
+        self.assertEqual((o[1]["model"], o[2]["model"]), ("claude-haiku", "gpt-mini"))
+        self.assertEqual([x["hazir"] for x in o], [True, True, False])
+        self.assertIn("kurulu değil", o[2]["hazir_sebep"])
         self.assertIn("sebep", o[0])
+        self.assertEqual(o[0]["motor_ad"], "Gemini")
 
-    def test_eslesen_model_yoksa_none_ve_not(self):
-        with mock.patch.object(ms, "site_modelleri", self.sahte_modeller):
-            _, v = self.post("/api/oneri", {"metin": "Merhaba nasılsın"})   # sohbet/basit → gemini flash, chatgpt mini, claude haiku
-            self.assertEqual(v["oneriler"][0]["model"], "Gemini 3 Flash")
-            _, v = self.post("/api/oneri", {"metin": "Elektrikli araçları karşılaştır ve kaynak göster. " + "a" * 1300})
+    def test_zor_arastirma_gemini_guclu(self):
+        _, v = self.post("/api/oneri", {"metin": "Elektrikli araçları karşılaştır ve kaynak göster. " + "a" * 1300})
         self.assertEqual((v["tur"], v["zorluk"]), ("arastirma", "zor"))
-        self.assertEqual((v["oneriler"][0]["site"], v["oneriler"][0]["model"]), ("gemini", "Gemini 3 Pro"))
-        claude = next(x for x in v["oneriler"] if x["site"] == "claude")
-        self.assertIsNone(claude["model"])
-        chatgpt = next(x for x in v["oneriler"] if x["site"] == "chatgpt")   # "pro" aranır, menüde yok
-        self.assertIsNone(chatgpt["model"])
-        self.assertIn("pro", chatgpt["model_notu"])
+        self.assertEqual((v["oneriler"][0]["motor"], v["oneriler"][0]["model"]), ("gemini", "gemini-ultra"))
+
+    def test_motor_yoksa_model_none(self):
+        with mock.patch.dict(sys.modules, {"motorlar": None}):
+            self.motor_onbellegini_temizle()
+            _, v = self.post("/api/oneri", {"metin": "Merhaba nasılsın"})
+        self.assertTrue(all(x["model"] is None and x["hazir"] is False for x in v["oneriler"]))
 
     def test_bos_metin_reddedilir(self):
         for g in ({"metin": ""}, {"metin": "   "}, {}, {"metin": 5}):
@@ -682,9 +1169,10 @@ class OneriHttpTesti(HttpTabani):
                 self.assertIn("boş", v["hata"])
 
     def test_oneri_ayar_dosyasina_dokunmaz(self):
-        with mock.patch.object(ms, "site_modelleri", self.sahte_modeller):
-            self.post("/api/oneri", {"metin": "merhaba dünya"})
-        self.assertFalse(ms.AYAR_DOSYASI.exists())
+        import os
+        once = os.path.getmtime(ms.AYAR_DOSYASI)
+        self.post("/api/oneri", {"metin": "merhaba dünya"})
+        self.assertEqual(os.path.getmtime(ms.AYAR_DOSYASI), once)
 
     def test_son_siniflandirma_yonlendirme_durumunda(self):
         kod, v = self.get("/api/yonlendirme")
@@ -693,25 +1181,43 @@ class OneriHttpTesti(HttpTabani):
         self.assertEqual(len(v["tablo"]), 21)
         self.assertEqual(v["dosya"], str(ms.yonlendirici.YONLENDIRME_DOSYASI))
         self.assertEqual(v["uyarilar"], [])
-        with mock.patch.object(ms, "site_modelleri", self.sahte_modeller):
-            self.post("/api/oneri", {"metin": "Python hatasını bul"})
+        satir = next(r for r in v["tablo"] if r["tur"] == "kod" and r["zorluk"] == "orta")
+        self.assertEqual(satir["tercihler"][0], {"motor": "claude", "motor_ad": "Claude", "sinif": "dengeli", "sinif_ad": "dengeli"})
+        self.post("/api/oneri", {"metin": "Python hatasını bul"})
         _, v = self.get("/api/yonlendirme")
         self.assertEqual((v["son"]["tur"], v["son"]["zorluk"], v["son"]["tur_ad"]), ("kod", "basit", "kod"))
         self.assertRegex(v["son"]["zaman"], r"^\d\d:\d\d:\d\d$")
         self.assertNotIn("Python", json.dumps(v, ensure_ascii=False), "mesaj metni saklanmaz")
+
+    def test_sor_da_son_siniflandirmayi_gunceller(self):
+        self.sor({"metin": "SQL sorgusunu düzelt"})
+        _, v = self.get("/api/yonlendirme")
+        self.assertEqual(v["son"]["tur"], "kod")
 
     def test_bozuk_kural_dosyasi_yerlesige_duser(self):
         import tempfile
         with tempfile.TemporaryDirectory() as klasor:
             dosya = Path(klasor) / "y.json"
             dosya.write_text("{bozuk", "utf-8")
-            with mock.patch.object(ms.yonlendirici, "YONLENDIRME_DOSYASI", dosya), \
-                    mock.patch.object(ms, "site_modelleri", self.sahte_modeller):
+            with mock.patch.object(ms.yonlendirici, "YONLENDIRME_DOSYASI", dosya):
                 kod, v = self.post("/api/oneri", {"metin": "merhaba dünya"})
                 _, d = self.get("/api/yonlendirme")
+                _, o = self.sor({"metin": "merhaba dünya"})
         self.assertEqual(kod, 200)
-        self.assertEqual(v["oneriler"][0]["site"], "gemini")
+        self.assertEqual(v["oneriler"][0]["motor"], "gemini")
         self.assertTrue(v["uyarilar"] and d["uyarilar"])
+        self.assertEqual(o[0]["tur"], "secim")        # kural dosyası bozuksa akış yine çalışır
+
+    def test_eski_biçimli_kural_dosyasi_uyari_verir_ve_yerlesige_duser(self):
+        import tempfile
+        eski = {"varsayilan": {"basit": [{"site": "gemini", "model_icerir": "flash"}]}}
+        with tempfile.TemporaryDirectory() as klasor:
+            dosya = Path(klasor) / "y.json"
+            dosya.write_text(json.dumps(eski), "utf-8")
+            with mock.patch.object(ms.yonlendirici, "YONLENDIRME_DOSYASI", dosya):
+                _, d = self.get("/api/yonlendirme")
+        self.assertTrue(d["uyarilar"])
+        self.assertEqual(d["tablo"][0]["tercihler"][0]["motor"], "gemini")
 
     def test_yonlendirme_dosyasini_ac(self):
         with mock.patch.object(ms.os, "startfile", create=True) as ac:
@@ -735,14 +1241,20 @@ class OneriHttpTesti(HttpTabani):
             with self.subTest(yol=yol):
                 self.assertEqual(self.get(yol)[0], 400)
 
-    def test_modeller_ucu_belirtecsiz_403(self):
+    def test_ucler_belirtecsiz_403(self):
         import urllib.error
         import urllib.request
         acici = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        for yol in ("/api/modeller?site=gemini", "/api/yonlendirme"):
+        for yol in ("/api/modeller?site=gemini", "/api/yonlendirme", "/api/motor-modelleri", "/api/durum"):
             with self.subTest(yol=yol), self.assertRaises(urllib.error.HTTPError) as h:
                 acici.open(f"http://127.0.0.1:{self.sunucu.server_port}{yol}", timeout=10)
             self.assertEqual(h.exception.code, 403)
+
+
+MODEL_LISTELERI = {
+    "gemini": {"modeller": [{"id": "g1", "ad": "Gemini 3 Flash", "secili": True},
+                            {"id": "g2", "ad": "Gemini 3 Pro", "secili": False}], "sebep": ""},
+}
 
 
 class ModelListesiOkumaTesti(unittest.TestCase):
@@ -1093,14 +1605,11 @@ class HassasVeModelGonderHttpTesti(HttpTabani):
         self.assertEqual(kayit["sorunlar"], v["sorunlar"])
 
 
-class JevBaglantiHttpTesti(HttpTabani):
+class JevBaglantiHttpTesti(MotorluHttpTabani):
     """Jev bağlantıları: /api/oneri (kaynak jev/kural), hassas uyarısı, /api/yanit-puanla, /api/jev-durum.
 
     jev.sinifla ve jev.hazir_mi yamalanır; ağa hiç çıkılmaz (gerçek Jev'e istek gitmez).
     """
-
-    def sahte_modeller(self, site_id, yenile=False):
-        return {"site": site_id, **MODEL_LISTELERI[site_id]}
 
     def jev_yamasi(self, cevap, hazir=True):
         """cevap(metin, secenekler, **ek) → sonuç ya da istisna; çağrılar self.cagrilar'a kaydedilir."""
@@ -1127,11 +1636,10 @@ class JevBaglantiHttpTesti(HttpTabani):
             return self.secim("kod") if "kod" in secenekler else self.secim("zor")
         self.jev_yamasi(cevap)
         ms.ayarlari_yaz({"ayarlar": dict(HAFIZASIZ)})
-        with mock.patch.object(ms, "site_modelleri", self.sahte_modeller):
-            kod, v = self.post("/api/oneri", {"metin": "Bu makaleyi özetle"})   # kurala göre özet/basit olurdu
+        kod, v = self.post("/api/oneri", {"metin": "Bu makaleyi özetle"})   # kurala göre özet/basit olurdu
         self.assertEqual(kod, 200)
         self.assertEqual((v["tur"], v["zorluk"], v["kaynak"]), ("kod", "zor", "jev"))
-        self.assertEqual(v["oneriler"][0]["site"], "claude")   # kod/zor tercih sırası
+        self.assertEqual(v["oneriler"][0]["motor"], "claude")   # kod/zor tercih sırası
         self.assertEqual(len(self.cagrilar), 2)
         self.assertEqual(sorted(tuple(sorted(c["secenekler"])) for c in self.cagrilar),
                          sorted([tuple(sorted(ms.yonlendirici.TURLER)), ("basit", "orta", "zor")]))
@@ -1142,29 +1650,25 @@ class JevBaglantiHttpTesti(HttpTabani):
         # Yazarken otomatik çağrılan /api/oneri, parola/anahtar içeren metni onay alınmadan Jev'e göndermemeli.
         self.jev_yamasi(lambda m, s: self.secim("kod"))
         ms.ayarlari_yaz({"ayarlar": dict(HAFIZASIZ)})
-        with mock.patch.object(ms, "site_modelleri", self.sahte_modeller):
-            kod, v = self.post("/api/oneri", {"metin": "şifre: Abc12345 ile giriş yap"})
+        kod, v = self.post("/api/oneri", {"metin": "şifre: Abc12345 ile giriş yap"})
         self.assertEqual(kod, 200)
         self.assertEqual(v["kaynak"], "kural")
         self.assertEqual(self.cagrilar, [])
 
     def test_oneri_jev_hata_verince_kural(self):
         self.jev_yamasi(lambda m, s: ms.jev.JevHatasi("Jev 8 saniyede yanıt vermedi."))
-        with mock.patch.object(ms, "site_modelleri", self.sahte_modeller):
-            kod, v = self.post("/api/oneri", {"metin": "Bu makaleyi özetle"})
+        kod, v = self.post("/api/oneri", {"metin": "Bu makaleyi özetle"})
         self.assertEqual(kod, 200)
         self.assertEqual((v["tur"], v["zorluk"], v["kaynak"]), ("ozet", "basit", "kural"))
 
     def test_oneri_jev_kapali_ya_da_hazir_degilse_cagrilmaz(self):
         self.jev_yamasi(lambda m, s: self.secim("kod"))
         ms.ayarlari_yaz({"ayarlar": {"jev_acik": False}})
-        with mock.patch.object(ms, "site_modelleri", self.sahte_modeller):
-            _, v = self.post("/api/oneri", {"metin": "Bu makaleyi özetle"})
+        _, v = self.post("/api/oneri", {"metin": "Bu makaleyi özetle"})
         self.assertEqual(v["kaynak"], "kural")
         self.jev_yamasi(lambda m, s: self.secim("kod"), hazir=False)
         ms.ayarlari_yaz({"ayarlar": {"jev_acik": True}})
-        with mock.patch.object(ms, "site_modelleri", self.sahte_modeller):
-            _, v = self.post("/api/oneri", {"metin": "Bu makaleyi özetle"})
+        _, v = self.post("/api/oneri", {"metin": "Bu makaleyi özetle"})
         self.assertEqual(v["kaynak"], "kural")
         self.assertEqual(self.cagrilar, [])
 

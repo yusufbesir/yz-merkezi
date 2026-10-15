@@ -1,59 +1,59 @@
 {
-  "_aciklama": "Ajan seçimi tercih sırası. Her tercih bir site ve o sitenin model menüsünde GEÇEN bir ad parçasıdır (büyük/küçük harf fark etmez; ör. 'flash', 'sonnet', 'sonnet 5.5'). Gerçek model adı canlı menüden bulunur; menü okunamazsa yalnızca site önerilir. Sıra önemlidir: ilk tercih en uygun olandır. Arama sırası: turler > tür > zorluk, yoksa turler > tür > hepsi, yoksa varsayilan > zorluk. Türler: arastirma, kod, yazi, ceviri, ozet, sohbet, matematik. Zorluklar: basit, orta, zor. Siteler: chatgpt, gemini, claude. Ayrıntı: BENIOKU.md > Yönlendirme ve hassas bilgi uyarısı.",
+  "_aciklama": "Motor seçimi tercih sırası. Her tercih bir motor ve bir model sınıfıdır. Motorlar: claude, codex (ChatGPT), gemini. Sınıflar: hizli, dengeli, guclu. Gerçek model adı motorun kendi model listesinden sınıfa göre seçilir (Ayarlar > Motorlar'da sınıf başına tercih edilen model seçilebilir). Sıra önemlidir: ilk tercih en uygun olandır; hazır olmayan motor atlanır. Arama sırası: turler > tür > zorluk, yoksa turler > tür > hepsi, yoksa varsayilan > zorluk. Türler: arastirma, kod, yazi, ceviri, ozet, sohbet, matematik. Zorluklar: basit, orta, zor. Ayrıntı: BENIOKU.md > Yönlendirme.",
   "varsayilan": {
     "basit": [
-      {"site": "gemini", "model_icerir": "flash"},
-      {"site": "chatgpt", "model_icerir": "mini"},
-      {"site": "claude", "model_icerir": "haiku"}
+      {"motor": "gemini", "sinif": "hizli"},
+      {"motor": "codex", "sinif": "hizli"},
+      {"motor": "claude", "sinif": "hizli"}
     ],
     "orta": [
-      {"site": "claude", "model_icerir": "sonnet"},
-      {"site": "chatgpt", "model_icerir": "gpt"},
-      {"site": "gemini", "model_icerir": "pro"}
+      {"motor": "claude", "sinif": "dengeli"},
+      {"motor": "codex", "sinif": "dengeli"},
+      {"motor": "gemini", "sinif": "dengeli"}
     ],
     "zor": [
-      {"site": "claude", "model_icerir": "opus"},
-      {"site": "chatgpt", "model_icerir": "pro"},
-      {"site": "gemini", "model_icerir": "pro"}
+      {"motor": "claude", "sinif": "guclu"},
+      {"motor": "codex", "sinif": "guclu"},
+      {"motor": "gemini", "sinif": "guclu"}
     ]
   },
   "turler": {
     "kod": {
       "basit": [
-        {"site": "claude", "model_icerir": "haiku"},
-        {"site": "chatgpt", "model_icerir": "mini"},
-        {"site": "gemini", "model_icerir": "flash"}
+        {"motor": "claude", "sinif": "hizli"},
+        {"motor": "codex", "sinif": "hizli"},
+        {"motor": "gemini", "sinif": "hizli"}
       ],
       "orta": [
-        {"site": "claude", "model_icerir": "sonnet"},
-        {"site": "chatgpt", "model_icerir": "gpt"},
-        {"site": "gemini", "model_icerir": "pro"}
+        {"motor": "claude", "sinif": "dengeli"},
+        {"motor": "codex", "sinif": "dengeli"},
+        {"motor": "gemini", "sinif": "dengeli"}
       ],
       "zor": [
-        {"site": "claude", "model_icerir": "opus"},
-        {"site": "chatgpt", "model_icerir": "pro"},
-        {"site": "gemini", "model_icerir": "pro"}
+        {"motor": "claude", "sinif": "guclu"},
+        {"motor": "codex", "sinif": "guclu"},
+        {"motor": "gemini", "sinif": "guclu"}
       ]
     },
     "ceviri": {
       "hepsi": [
-        {"site": "gemini", "model_icerir": "flash"},
-        {"site": "chatgpt", "model_icerir": "mini"},
-        {"site": "claude", "model_icerir": "haiku"}
+        {"motor": "gemini", "sinif": "hizli"},
+        {"motor": "claude", "sinif": "hizli"},
+        {"motor": "codex", "sinif": "hizli"}
       ]
     },
     "ozet": {
       "hepsi": [
-        {"site": "gemini", "model_icerir": "flash"},
-        {"site": "chatgpt", "model_icerir": "mini"},
-        {"site": "claude", "model_icerir": "haiku"}
+        {"motor": "gemini", "sinif": "hizli"},
+        {"motor": "claude", "sinif": "hizli"},
+        {"motor": "codex", "sinif": "hizli"}
       ]
     },
     "arastirma": {
       "zor": [
-        {"site": "gemini", "model_icerir": "pro"},
-        {"site": "claude", "model_icerir": "opus"},
-        {"site": "chatgpt", "model_icerir": "pro"}
+        {"motor": "gemini", "sinif": "guclu"},
+        {"motor": "claude", "sinif": "guclu"},
+        {"motor": "codex", "sinif": "guclu"}
       ]
     }
   }
