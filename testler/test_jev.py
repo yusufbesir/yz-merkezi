@@ -120,6 +120,35 @@ class HazirlikTesti(JevTabani):
             jev.sinifla("merhaba", ["a", "b"])
         self.assertEqual(self.sahte.istekler[0]["govde"]["model"], "typesafe-ai/jev-sabit-1")
 
+    def test_latest_model_reddedilir(self):
+        for model in ("typesafe-ai/jev:latest", "typesafe-ai/jev@latest", "jev-latest", "LATEST"):
+            self.ayar_yaz(model=model)
+            self.assertFalse(jev.hazir_mi(), model)
+            self.assertIn("model sürümü 'latest' olamaz", jev.durum()["sebep"])
+            with self.assertRaises(jev.JevHatasi):
+                jev.sinifla("merhaba", ["a", "b"])
+        self.assertEqual(self.sahte.istekler, [])
+
+    def test_surumsuz_model_varsayilan_kabul_ama_uyari(self):
+        self.assertFalse(jev.JEV_SURUM_ZORUNLU)
+        d = jev.durum()
+        self.assertTrue(d["hazir"])
+        self.assertIs(d["surum_sabit"], False)
+        self.assertIn("sürüm", d["surum_uyarisi"])
+
+    def test_surumlu_model_uyarisiz(self):
+        for model in ("typesafe-ai/jev@1.13.0", "typesafe-ai/jev:1.13", "typesafe-ai/jev-v2", "jev-1.13.0"):
+            self.ayar_yaz(model=model)
+            d = jev.durum()
+            self.assertTrue(d["hazir"] and d["surum_sabit"] is True and d["surum_uyarisi"] is None, model)
+
+    def test_surum_zorunluysa_surumsuz_reddedilir(self):
+        with mock.patch.object(jev, "JEV_SURUM_ZORUNLU", True):
+            self.assertFalse(jev.hazir_mi())
+            self.assertIn("sürüm yok", jev.durum()["sebep"])
+            self.ayar_yaz(model="typesafe-ai/jev@1.13.0")
+            self.assertTrue(jev.hazir_mi())
+
     def test_ayar_dosyasi_yoksa_hazir_degil(self):
         self.ayar_dosyasi.unlink()
         self.assertFalse(jev.hazir_mi())

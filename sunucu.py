@@ -64,6 +64,25 @@ def ayarlari_oku():
     return veri
 
 
+def duz_anahtarlari_sifrele():
+    """Açılışta: `anahtarlar` içinde `dpapi:` öneksiz (eski sürümden kalma düz metin) değer varsa hemen DPAPI ile
+    şifreleyip dosyayı atomik yeniden yazar. Döner: şifrelenen anahtar sayısı. DPAPI yoksa düz metin KALIR (hata yazılır)."""
+    with AYAR_KILIDI:
+        ayar = ayarlari_oku()
+        anahtarlar = ayar.get("anahtarlar") if isinstance(ayar, dict) else None
+        if not isinstance(anahtarlar, dict):
+            return 0
+        duzler = [k for k, v in anahtarlar.items() if isinstance(v, str) and v and not guvenlik.dpapi_sifreli_mi(v)]
+        if not duzler:
+            return 0
+        try:
+            ayarlari_yaz(ayar)  # düz değerleri şifreler; json_yaz yaz → fsync → os.replace ile atomiktir
+        except (ValueError, OSError) as h:
+            guvenlik.hata_yaz(f"Eski düz metin API anahtarları şifrelenemedi: {h}")
+            return 0
+        return len(duzler)
+
+
 def ayarlari_yaz(ayar):
     """Yazmadan önce `anahtarlar` değerlerini DPAPI ile şifreler (düz metin geçişi); DPAPI yoksa hata verir."""
     anahtarlar = ayar.get("anahtarlar")
@@ -154,13 +173,24 @@ def http_hatasi(e):
     return SaglayiciHatasi(f"{aciklama} (HTTP {e.code}): {mesaj.strip()[:400]}")
 
 
+class _YonlendirmeYok(urllib.request.HTTPRedirectHandler):
+    """3xx yönlendirmesi izlenmez: anahtar başlıkları ikinci bir adrese gitmesin."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        fp.close()
+        raise SaglayiciHatasi("Sağlayıcı yönlendirme yaptı; güvenlik için izlenmedi")
+
+
+_ACICI = urllib.request.build_opener(_YonlendirmeYok())
+
+
 def istek(url, veri=None, basliklar=None, zaman=60):
     tum_basliklar = {"Content-Type": "application/json", "User-Agent": "YapayZekaMerkezi/1.0"}
     tum_basliklar.update(basliklar or {})
     govde = json.dumps(veri).encode("utf-8") if veri is not None else None
     talep = urllib.request.Request(url, data=govde, headers=tum_basliklar, method="POST" if govde else "GET")
     try:
-        return urllib.request.urlopen(talep, timeout=zaman)
+        return _ACICI.open(talep, timeout=zaman)
     except urllib.error.HTTPError as e:
         raise http_hatasi(e) from None
     except (urllib.error.URLError, TimeoutError, OSError) as e:
@@ -302,7 +332,7 @@ def sohbet_et(s, model, mesajlar, sistem):
 def yerel_yokla(aday):
     sid, ad, adres = aday
     try:
-        with urllib.request.urlopen(adres + "/models", timeout=1.5) as y:
+        with _ACICI.open(adres + "/models", timeout=1.5) as y:
             veri = json.load(y)
         sayi = len(veri.get("data", veri.get("models", [])))
         return {"id": sid, "ad": ad, "tur": "openai", "adres": adres, "renk": "#22a06b",
@@ -534,6 +564,9 @@ def main():
         sys.exit(1)
     if not os.environ.get("YZ_AYAR_DOSYASI"):  # proje klasöründeki eski ayarlar.json bir kez veri klasörüne taşınır
         AYAR_DOSYASI = guvenlik.eski_veriyi_tasi(ESKI_AYAR_DOSYASI, AYAR_DOSYASI)
+    sayi = duz_anahtarlari_sifrele()  # taşımadan sonra: eski düz metin anahtarlar hemen şifrelenir
+    if sayi:
+        print(f"{sayi} eski düz metin API anahtarı DPAPI ile şifrelendi.")
     threading.Thread(target=yerelleri_tara, daemon=True).start()
     adres = f"http://127.0.0.1:{PORT}"
     # Belirteç adresin parçasında (#t=) gider; parça sunucuya gönderilmez, arayüz okuyup adresten siler.

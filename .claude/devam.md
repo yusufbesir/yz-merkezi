@@ -19,8 +19,13 @@ Güncelleme: 2026-10-15 20:52 (TR)
 
 - 21:35 Denetim bulguları (koordinatör aracılığıyla): jev-latest kaldır, onay yorumunu tarihle, eski API anahtarları DPAPI. Ajan çalışıyor; jev_acik varsayılanı kullanıcı kararı (11 Ekim) gereği açık kalıyor.
 
+- 21:50 Denetim düzeltmeleri commit 00ebede, 506 test OK, koordinatöre bildirildi.
+
+- 21:55 Denetim 2. tur (model sürümü reddi, açılışta DPAPI geçişi, sunucu.py yönlendirme yasağı): ajan çalışıyor.
+
 ## Sıradaki adımlar
-1. Denetim düzeltme ajanının raporu → tam suit → commit → iki hesaba push → commit kimliğini koordinatöre bildir.
+- Ajan raporu → tam suit → commit → push → koordinatöre özet + commit.
+- Tamamlandı. Bekleyen: kullanıcı Claude/Gemini girişi; denetmenin jev_acik sorusuna Yusuf'un yanıtı.
 1. M ve U raporlarını al; `motorlar/BENIOKU-motorlar.md`'yi BENIOKU'ya birleştir.
 2. Doğrulama ajanı (Sonnet): tam suit, sahte motorlarla akış, gerçek motorlarda yalnızca `hazir_mi()`.
 3. Commit + iki hesaba push (yedekle kalıbı: yusufbesir origin, yonkoakira yedek).

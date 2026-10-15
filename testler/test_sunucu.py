@@ -154,6 +154,24 @@ class SunucuTesti(unittest.TestCase):
         self.assertNotIn(ANAHTAR, self.dosya_metni())
         self.assertEqual(sunucu.anahtar_al(sunucu.saglayici_bul("ozel-sahte-oa"))[0], ANAHTAR)
 
+    @unittest.skipUnless(os.name == "nt", "DPAPI yalnızca Windows'ta")
+    def test_dpapi_acilista_duz_anahtarlar_sifrelenir(self):
+        eski = sunucu.AYAR_DOSYASI
+        yeni = Path(tempfile.mkdtemp()) / "ayarlar.json"
+        yeni.write_text(json.dumps({"anahtarlar": {"a": "duz-anahtar-1", "b": "duz-anahtar-2"},
+                                    "ozel_saglayicilar": []}), "utf-8")
+        sunucu.AYAR_DOSYASI = yeni
+        try:
+            self.assertEqual(sunucu.duz_anahtarlari_sifrele(), 2)
+            metin = yeni.read_text("utf-8")
+            self.assertNotIn("duz-anahtar", metin)
+            anahtarlar = json.loads(metin)["anahtarlar"]
+            self.assertTrue(all(v.startswith("dpapi:") for v in anahtarlar.values()))
+            self.assertEqual(sunucu.guvenlik.dpapi_coz(anahtarlar["a"]), "duz-anahtar-1")
+            self.assertEqual(sunucu.duz_anahtarlari_sifrele(), 0)  # ikinci çağrı: yapılacak şey yok
+        finally:
+            sunucu.AYAR_DOSYASI = eski
+
     def test_dpapi_yoksa_duz_metne_dusmez(self):
         with unittest.mock.patch("guvenlik.os.name", "posix"):
             with self.assertRaises(ValueError):
@@ -219,6 +237,36 @@ class SunucuTesti(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as h:
             self.post("/api/anahtar", {"id": "openai", "anahtar": "x"}, {"Origin": "http://kotu.site"})
         self.assertEqual(h.exception.code, 403)
+
+    def test_yonlendirme_izlenmez_anahtar_ikinci_adrese_gitmez(self):
+        ikinci = []
+
+        class Hedef(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                ikinci.append(self.headers.get("Authorization"))
+                self.send_response(200)
+                self.send_header("Content-Length", "2")
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+        hedef = ThreadingHTTPServer(("127.0.0.1", 0), Hedef)
+        threading.Thread(target=hedef.serve_forever, daemon=True).start()
+        self.addCleanup(hedef.shutdown)
+        yonlendiren = type("Yonlendiren", (BaseHTTPRequestHandler,), {
+            "log_message": lambda self, *a: None,
+            "do_GET": lambda self: (self.send_response(302),
+                                    self.send_header("Location", f"http://127.0.0.1:{hedef.server_port}/gizli"),
+                                    self.send_header("Content-Length", "0"), self.end_headers())})
+        kaynak = ThreadingHTTPServer(("127.0.0.1", 0), yonlendiren)
+        threading.Thread(target=kaynak.serve_forever, daemon=True).start()
+        self.addCleanup(kaynak.shutdown)
+        with self.assertRaises(sunucu.SaglayiciHatasi) as h:
+            sunucu.istek(f"http://127.0.0.1:{kaynak.server_port}/x", basliklar={"Authorization": "Bearer gizli"})
+        self.assertIn("yönlendirme yaptı", str(h.exception))
+        self.assertEqual(ikinci, [], "anahtar yönlendirilen ikinci adrese gitmemeli")
 
     def test_arayuz_dosyalari_sunulur(self):
         with urllib.request.urlopen(self.kok + "/") as y:

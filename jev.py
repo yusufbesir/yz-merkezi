@@ -50,6 +50,10 @@ SAGLAYICI_SUNUCULARI = {"vercel": "ai-gateway.vercel.sh", "typesafe": "api.types
 ANAHTAR_ALANLARI = {"vercel": "AI_GATEWAY_API_KEY", "typesafe": "TYPESAFE_API_KEY"}
 YEREL_SUNUCULAR = ("localhost", "127.0.0.1", "::1")
 SORU_KIMLIGI = "secim"
+# True ise sürümsüz model kimliği (ör. "typesafe-ai/jev") hazır sayılmaz; False iken kabul edilir ama durumda uyarı çıkar.
+JEV_SURUM_ZORUNLU = False
+_SURUM_KALIBI = re.compile(r"(?:[@:][^@:\s/]+|-v\d+|[-/]\d+(?:\.\d+)+)$", re.IGNORECASE)
+SURUM_UYARISI = "Model sürümü sabitlenmemiş (yalnızca 'ad'); sağlayıcı modeli sessizce değiştirebilir."
 _SECENEK_KALIBI = re.compile(r"[a-z][a-z0-9_]{0,39}")  # kasadaki istemcinin seçenek anahtarı kuralı
 TALIMAT = ("Classify `text` into exactly one of the criteria options; pick the option whose description fits best. "
            "Use `context`, when present, only to understand what the options mean. "
@@ -70,6 +74,11 @@ _DURUM = {"cagri_sayisi": 0, "basarili": 0, "hatali": 0, "son_cagri": None, "son
 def ayar_yolu():
     """jev.json yolu (her çağrıda ortamdan okunur; testler `YZ_JEV_AYAR` ile geçici dosya verir)."""
     return Path(os.environ.get("YZ_JEV_AYAR") or VARSAYILAN_AYAR)
+
+
+def model_surumlu_mu(model):
+    """Model kimliği sürüm taşıyor mu: `@<sürüm>`, `:<sürüm>`, `-v<sayı>` ya da sondaki `-1.13.0` biçimi."""
+    return bool(_SURUM_KALIBI.search(model))
 
 
 def _ayar_oku():
@@ -94,6 +103,10 @@ def _ayar_oku():
     mod = ham.get("mode", "on")
     if not isinstance(model, str) or not model.strip() or not isinstance(taban, str):
         raise JevHatasi("Jev ayar dosyasında model ya da base_url geçersiz.")
+    if "latest" in model.lower():  # ":latest", "@latest", "jev-latest" ...: sürüm sabitlenmiş sayılmaz
+        raise JevHatasi("Jev model sürümü 'latest' olamaz; jev.json'da sabit bir sürüm yazın.")
+    if JEV_SURUM_ZORUNLU and not model_surumlu_mu(model.strip()):
+        raise JevHatasi("Jev model kimliğinde sürüm yok (@<sürüm>, :<sürüm> ya da -v<sayı> gerekli).")
     if not isinstance(anahtar_dosyasi, str) or not Path(anahtar_dosyasi).is_absolute():
         raise JevHatasi("Jev ayar dosyasında credentials_file (mutlak yol) yok.")
     if mod not in ("off", "shadow", "on"):
@@ -167,11 +180,14 @@ def durum():
     """/api/jev-durum için: anahtar dosyası bulundu mu, model, son çağrı. Anahtar değeri ve içerik YOK."""
     yol = ayar_yolu()
     sonuc = {"ayar_dosyasi": str(yol), "ayar_bulundu": yol.is_file(), "anahtar_dosyasi_bulundu": False,
-             "saglayici": None, "model": None, "hazir": False, "sebep": None}
+             "saglayici": None, "model": None, "hazir": False, "sebep": None,
+             "surum_sabit": None, "surum_uyarisi": None}
     try:
         ayar = _ayar_oku()
+        surumlu = model_surumlu_mu(ayar["model"])
         sonuc.update(saglayici=ayar["saglayici"], model=ayar["model"],
-                     anahtar_dosyasi_bulundu=ayar["anahtar_dosyasi"].is_file())
+                     anahtar_dosyasi_bulundu=ayar["anahtar_dosyasi"].is_file(),
+                     surum_sabit=surumlu, surum_uyarisi=None if surumlu else SURUM_UYARISI)
         _hazirlik()
         sonuc["hazir"] = True
     except JevHatasi as h:
