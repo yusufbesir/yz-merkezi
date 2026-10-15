@@ -35,6 +35,8 @@ Güncelleme: 2026-10-15 20:52 (TR)
 
 - 02:30 Pano testleri: oturum token'ı pano erişimine izin vermiyor (hata 5, tutan pencere yok); dar koşullu skipTest + ayrım testleri eklendi (21 test, 4 atlandı). Yusuf kendi terminalinde `python -m unittest testler.test_pencereler.PanoGizliligiTesti` koşmalı; o gelene kadar güvenlik commit'i "tam doğrulandı" sayılmaz.
 
+- 02:50 Güvenlik commit 77b8352 (604 test, 4 atlandı), push, uygulama 1.1.0 ile yeniden başlatıldı, koordinatöre ve Yusuf'a bildirildi. DURUM: tamamlandı; bekleyen yalnızca Yusuf'un pano testi koşusu ve Claude/Gemini girişleri.
+
 ## Sıradaki adımlar
 - Güvenlik ajanı raporu → tam suit → commit → push → koordinatöre commit → uygulamayı yeniden başlat (belirteç yolu değişiyor).
 - Bekleyen: kullanıcı Claude/Gemini girişi; jev_acik ve sürümlü Jev kimliği kararı (Yusuf). Bekleyen: kullanıcı Claude/Gemini girişi; denetmenin jev_acik sorusuna Yusuf'un yanıtı.
