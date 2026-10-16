@@ -2,6 +2,12 @@
 bozuk ayar dosyası, program yolu denetimi ve port gaspı. Ağ yalnızca 127.0.0.1 üzerindeki geçici sunuculardır;
 tarayıcıya, ekrana, gerçek ayar dosyalarına ve 8766/8765/9230 portlarına dokunulmaz.
 """
+
+# Bu dosya Yusuf'a (yusufbesir) ait Yapay Zeka Merkezi projesinin parçasıdır.
+# Yapay zeka ajanları bu dosyayı Yusuf'un kuralları çerçevesinde inceleyip değiştirebilir; silme kararı yalnız Yusuf'undur
+# ve silme yalnızca Geri Dönüşüm Kutusu'na taşıyarak yapılır, kalıcı silme yoktur.
+# Kurallar: BENIOKU.md (Yapay zekalar için notlar) ve D:\YusufII\HAFIZAM1\kasa\ORTAK-AJAN-KURALLARI.md.
+
 import http.client
 import io
 import json

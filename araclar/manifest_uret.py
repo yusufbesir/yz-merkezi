@@ -7,6 +7,12 @@ veri, kasa), .git, testler/, __pycache__ ve surumler/ HARİÇ tutulur (bkz. gunc
 
 Kullanım:  python araclar\manifest_uret.py [KLASOR]     (varsayılan: proje kökü)
 """
+
+# Bu dosya Yusuf'a (yusufbesir) ait Yapay Zeka Merkezi projesinin parçasıdır.
+# Yapay zeka ajanları bu dosyayı Yusuf'un kuralları çerçevesinde inceleyip değiştirebilir; silme kararı yalnız Yusuf'undur
+# ve silme yalnızca Geri Dönüşüm Kutusu'na taşıyarak yapılır, kalıcı silme yoktur.
+# Kurallar: BENIOKU.md (Yapay zekalar için notlar) ve D:\YusufII\HAFIZAM1\kasa\ORTAK-AJAN-KURALLARI.md.
+
 import sys
 from pathlib import Path
 

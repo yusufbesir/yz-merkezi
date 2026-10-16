@@ -19,6 +19,12 @@ Konum: kullanıcının düzenlediği kopya uygulama veri klasöründedir (`%LOCA
 `YZ_YONLENDIRME` ile değişir); böylece sürüm klasörü güncellemede değişip eski sürüm temizlense de kurallar kalır.
 Kopya yoksa ilk okumada paketteki `yonlendirme.json` (şablon) oraya kopyalanır; var olan kopyaya hiç dokunulmaz.
 """
+
+# Bu dosya Yusuf'a (yusufbesir) ait Yapay Zeka Merkezi projesinin parçasıdır.
+# Yapay zeka ajanları bu dosyayı Yusuf'un kuralları çerçevesinde inceleyip değiştirebilir; silme kararı yalnız Yusuf'undur
+# ve silme yalnızca Geri Dönüşüm Kutusu'na taşıyarak yapılır, kalıcı silme yoktur.
+# Kurallar: BENIOKU.md (Yapay zekalar için notlar) ve D:\YusufII\HAFIZAM1\kasa\ORTAK-AJAN-KURALLARI.md.
+
 import json
 import os
 import re

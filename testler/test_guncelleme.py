@@ -3,6 +3,12 @@
 Her şey geçici klasörlerde olur: gerçek %LOCALAPPDATA%\\YZMerkezi, kasa ve proje kökündeki dosyalar ne silinir ne
 yazılır. Proje kökü yalnızca OKUNUR (manifest üretimi ve gerçek uygulamanın duman testi için geçici kopya).
 """
+
+# Bu dosya Yusuf'a (yusufbesir) ait Yapay Zeka Merkezi projesinin parçasıdır.
+# Yapay zeka ajanları bu dosyayı Yusuf'un kuralları çerçevesinde inceleyip değiştirebilir; silme kararı yalnız Yusuf'undur
+# ve silme yalnızca Geri Dönüşüm Kutusu'na taşıyarak yapılır, kalıcı silme yoktur.
+# Kurallar: BENIOKU.md (Yapay zekalar için notlar) ve D:\YusufII\HAFIZAM1\kasa\ORTAK-AJAN-KURALLARI.md.
+
 import json
 import os
 import shutil

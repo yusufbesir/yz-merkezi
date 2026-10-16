@@ -1,3 +1,8 @@
+> Bu dosya Yusuf'a (yusufbesir) ait Yapay Zeka Merkezi projesinin parçasıdır.
+> Yapay zeka ajanları bu dosyayı Yusuf'un kuralları çerçevesinde inceleyip değiştirebilir; silme kararı yalnız Yusuf'undur
+> ve silme yalnızca Geri Dönüşüm Kutusu'na taşıyarak yapılır, kalıcı silme yoktur.
+> Kurallar: BENIOKU.md (Yapay zekalar için notlar) ve D:\YusufII\HAFIZAM1\kasa\ORTAK-AJAN-KURALLARI.md.
+
 # Yapay Zeka Merkezi
 
 Tek bir yapay zeka gibi çalışan Türkçe masaüstü uygulaması. Bir mesaj yazarsın; uygulama her mesaj için en uygun motoru (Claude, Codex/ChatGPT ya da Gemini) kendisi seçer ve yanıtı tek bir akışta gösterir. Hiçbir başka uygulamaya ya da pencereye mesaj göndermez.
@@ -430,3 +435,16 @@ Her adım (kopyalama, doğrulama, duman testi, işaretçi, her silinen/atlanan d
 - `araclar/simge_uret.py`: simgeyi (SVG -> PNG -> ICO) yeniden üretir; `kisayol-olustur.ps1`: Masaüstü kısayolunu oluşturur
 - `arayuz/`: Türkçe arayüz (HTML, CSS, JavaScript)
 - `testler/`: otomatik testler, `python -m unittest discover testler` ile çalışır. `test_entegrasyon.py` gerçek Edge'i geçici profille açıp `sahte-site.html` (ChatGPT'yi taklit eden yerel sayfa ve `sahte-site.js`/`.css` dosyaları, yalnızca `YZ_TEST=1` iken sunulur) üzerinde uçtan uca dener; Edge yoksa atlanır, gerçek sitelere hiç bağlanmaz. `testler/_ortam.py` testlerde ayar dosyası, profil ve veri klasörünü geçici yollara yönlendirir (gerçek dosyalara ve gerçek `%LOCALAPPDATA%\YZMerkezi` klasörüne dokunulmaz)
+
+## Yapay zekalar için notlar
+
+Bu projenin metin dosyalarında (py, js, html, css, bat, ps1, md) dosyanın başında şu açıklama bulunur:
+
+> Bu dosya Yusuf'a (yusufbesir) ait Yapay Zeka Merkezi projesinin parçasıdır.
+> Yapay zeka ajanları bu dosyayı Yusuf'un kuralları çerçevesinde inceleyip değiştirebilir; silme kararı yalnız Yusuf'undur
+> ve silme yalnızca Geri Dönüşüm Kutusu'na taşıyarak yapılır, kalıcı silme yoktur.
+> Kurallar: BENIOKU.md (Yapay zekalar için notlar) ve D:\YusufII\HAFIZAM1\kasa\ORTAK-AJAN-KURALLARI.md.
+
+Metin olmayan dosyalar (json, png, ico, svg) yorum satırı taşıyamadığı için aynı kurala bu BENIOKU.md üzerinden tabidir: `saglayicilar.json`, `uygulamalar.json`, `yonlendirme.json`, `arayuz/simge.ico`, `arayuz/simge.svg`, `arayuz-masaustu/simge.ico`, `arayuz-masaustu/simge.svg`, `arayuz-masaustu/simge-kucuk.svg`, `arayuz-masaustu/simge-256.png`.
+
+Yapay zekalar bunları Yusuf'un kuralları çerçevesinde değiştirebilir; silme kararı yalnız Yusuf'undur ve yalnızca Geri Dönüşüm Kutusu'na taşınarak yapılır.

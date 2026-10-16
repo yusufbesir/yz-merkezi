@@ -1,3 +1,8 @@
+> Bu dosya Yusuf'a (yusufbesir) ait Yapay Zeka Merkezi projesinin parçasıdır.
+> Yapay zeka ajanları bu dosyayı Yusuf'un kuralları çerçevesinde inceleyip değiştirebilir; silme kararı yalnız Yusuf'undur
+> ve silme yalnızca Geri Dönüşüm Kutusu'na taşıyarak yapılır, kalıcı silme yoktur.
+> Kurallar: BENIOKU.md (Yapay zekalar için notlar) ve D:\YusufII\HAFIZAM1\kasa\ORTAK-AJAN-KURALLARI.md.
+
 # Devam noktası (kesintiden sonra buradan sürdür)
 
 Güncelleme: 2026-10-15 20:52 (TR)
@@ -45,7 +50,10 @@ Güncelleme: 2026-10-15 20:52 (TR)
 
 - 03:40 Örtüşmeli tarama + uzun metin onayı commit 94cf6a8 (618 test), uygulama yeniden başlatıldı, bildirildi.
 
+- 08:40 Yusuf kuralı: her dosyaya YZ'lerin anlayacağı açıklama (sahip, değiştirme/silme kuralları); Haiku ajanı başlıkları ekliyor. Silme yalnız çöp kutusuna (zaten guncelleme.py böyle).
+
 ## Sıradaki adımlar
+- Başlık ajanı raporu → suit → commit → push.
 - Tamamlandı. Bekleyen: Yusuf'un pano testi koşusu; Claude/Gemini girişleri. Bekleyen: Yusuf'un pano testi koşusu; Claude/Gemini girişleri.
 - Güvenlik ajanı raporu → tam suit → commit → push → koordinatöre commit → uygulamayı yeniden başlat (belirteç yolu değişiyor).
 - Bekleyen: kullanıcı Claude/Gemini girişi; jev_acik ve sürümlü Jev kimliği kararı (Yusuf). Bekleyen: kullanıcı Claude/Gemini girişi; denetmenin jev_acik sorusuna Yusuf'un yanıtı.

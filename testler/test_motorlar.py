@@ -3,6 +3,12 @@
 Her motor `YZ_MOTOR_<ID>_EXE` ortam değişkeniyle sahte `.py` betiğine bağlanır. Çalışma klasörü, Codex ve Gemini
 ev klasörleri geçici dizinlere yönlendirilir (gerçek ~/.codex, ~/.gemini ve %LOCALAPPDATA% ayarlarına dokunulmaz).
 """
+
+# Bu dosya Yusuf'a (yusufbesir) ait Yapay Zeka Merkezi projesinin parçasıdır.
+# Yapay zeka ajanları bu dosyayı Yusuf'un kuralları çerçevesinde inceleyip değiştirebilir; silme kararı yalnız Yusuf'undur
+# ve silme yalnızca Geri Dönüşüm Kutusu'na taşıyarak yapılır, kalıcı silme yoktur.
+# Kurallar: BENIOKU.md (Yapay zekalar için notlar) ve D:\YusufII\HAFIZAM1\kasa\ORTAK-AJAN-KURALLARI.md.
+
 import json
 import os
 import shutil

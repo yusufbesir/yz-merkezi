@@ -1,3 +1,10 @@
+/*
+ * Bu dosya Yusuf'a (yusufbesir) ait Yapay Zeka Merkezi projesinin parçasıdır.
+ * Yapay zeka ajanları bu dosyayı Yusuf'un kuralları çerçevesinde inceleyip değiştirebilir; silme kararı yalnız Yusuf'undur
+ * ve silme yalnızca Geri Dönüşüm Kutusu'na taşıyarak yapılır, kalıcı silme yoktur.
+ * Kurallar: BENIOKU.md (Yapay zekalar için notlar) ve D:\YusufII\HAFIZAM1\kasa\ORTAK-AJAN-KURALLARI.md.
+ */
+
 /* Testler için sahte site stili (CSP satır içi stile izin vermediğinden ayrı dosya). */
   body { font: 15px/1.5 system-ui, sans-serif; margin: 0; display: flex; height: 100vh; background: #fff; color: #222; }
   nav { width: 220px; padding: 12px; background: #f4f4f4; display: flex; flex-direction: column; gap: 6px; }

@@ -10,6 +10,12 @@ Komut (istem standart girdiden):
   `--setting-sources project,local` kullanıcı ayarlarındaki kancaların (hook) sohbet sırasında çalışmasını önler.
 - Oturum sürekliliği: `result` olayındaki `session_id` → sonraki çağrıda `--resume`.
 """
+
+# Bu dosya Yusuf'a (yusufbesir) ait Yapay Zeka Merkezi projesinin parçasıdır.
+# Yapay zeka ajanları bu dosyayı Yusuf'un kuralları çerçevesinde inceleyip değiştirebilir; silme kararı yalnız Yusuf'undur
+# ve silme yalnızca Geri Dönüşüm Kutusu'na taşıyarak yapılır, kalıcı silme yoktur.
+# Kurallar: BENIOKU.md (Yapay zekalar için notlar) ve D:\YusufII\HAFIZAM1\kasa\ORTAK-AJAN-KURALLARI.md.
+
 import json
 import os
 from pathlib import Path
