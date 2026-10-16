@@ -349,13 +349,52 @@ class UrlSorgusuVeSureTesti(unittest.TestCase):
                       "a@b.c:a1!" * 20000):
             self._sure(metin)
 
-    def test_girdi_siniri_kirpildi_bilgisi(self):
-        self.assertFalse(hassas.tara("x" * hassas.GIRDI_SINIRI)["kirpildi"])
-        self.assertTrue(hassas.tara("x" * (hassas.GIRDI_SINIRI + 1))["kirpildi"])
-        s = hassas.tara("parola: x1y2z3 " + "a" * (hassas.GIRDI_SINIRI + 10))
-        self.assertEqual((s["kategori"], s["kirpildi"]), ("parola", True))
-        uzun = "ali@ornek.com:Gizli123! " + "b " * hassas.GIRDI_SINIRI
-        self.assertIn("[GİZLİ:parola]", hassas.maskele(uzun))
+    def test_girdi_siniri_tum_metin_taranir(self):
+        S = hassas.GIRDI_SINIRI
+        self.assertFalse(hassas.tara("x" * (S + 1))["kirpildi"])
+        anahtar = "sk-" + "A1b2C3d4E5f6G7h8I9j0"
+        uzun = "lorem ipsum " * 12500 + anahtar          # 150.000 karakter, anahtar en sonda
+        self.assertGreater(len(uzun), 150000 - 1)
+        s = hassas.tara(uzun)
+        self.assertEqual(s["kategori"], "api_anahtari")
+        self.assertEqual(s["eslesme_sayisi"], 1)
+        self.assertTrue(hassas.hassas_var_mi(uzun))
+        self.assertIn("[GİZLİ:api_anahtari]", hassas.maskele(uzun))
+
+    def test_parca_siniri_anahtari(self):
+        S = hassas.GIRDI_SINIRI
+        anahtar = "sk-" + "A1b2C3d4E5f6G7h8I9j0"
+        for konum in range(S - 100, S + 101, 7):
+            with self.subTest(konum=konum):
+                metin = "." * konum + " " + anahtar + " " + "." * 60000
+                s = hassas.tara(metin)
+                self.assertEqual((s["kategori"], s["eslesme_sayisi"]), ("api_anahtari", 1))
+                m = hassas.maskele(metin)
+                self.assertNotIn("A1b2C3d4", m)
+                self.assertEqual(m.count("[GİZLİ:api_anahtari]"), 1)
+                self.assertEqual(len(m), len(metin) - len(anahtar) + len("[GİZLİ:api_anahtari]"))
+
+    def test_maskele_uzunluk_ve_konum(self):
+        anahtar = "sk-" + "A1b2C3d4E5f6G7h8I9j0"
+        metin = "." * 200000 + " " + anahtar + " " + "." * 100000 + " parola: x1y2z3 " + "." * 50
+        m = hassas.maskele(metin)
+        beklenen = ("." * 200000 + " [GİZLİ:api_anahtari] " + "." * 100000 + " parola: [GİZLİ:parola] " + "." * 50)
+        self.assertEqual(m, beklenen)
+
+    def test_uzun_metin_suresi(self):
+        import time
+        metin = "merhaba dünya, bu bir deneme. " * 10000   # 300k
+        t = time.perf_counter()
+        hassas.tara(metin)
+        hassas.maskele(metin)
+        self.assertLess((time.perf_counter() - t) / 2, 1.5)
+
+    def test_hassas_var_mi_kirpilmis_sonucta_guvenli_taraf(self):
+        from unittest import mock
+        sahte = {"kategori": "yok", "eslesme_sayisi": 0, "ornek": "", "kategoriler": [], "onem": None,
+                 "kirpildi": True}
+        with mock.patch.object(hassas, "tara", return_value=sahte):
+            self.assertTrue(hassas.hassas_var_mi("her ne ise"))
 
     def test_eposta_parola_siniri_pozitif_negatif(self):
         self.assertEqual(hassas.tara("ali@ornek.com:Gizli123!")["kategori"], "parola")

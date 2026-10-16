@@ -221,6 +221,7 @@ icacls "D:\YusufII\Projeler\yz-merkezi" /inheritance:r /grant:r "%USERNAME%:(OI)
 
 - **Açılış kodu yarışı**: `/ac/<kod>` adresi 30 sn boyunca komut satırında görünür. Aynı hesaptaki yerel bir süreç kodu önce tüketirse arayüz açılmaz (tek kullanım) ve oturum çerezi o sürece gider. Kabul edildi: aynı kullanıcı hesabındaki zararlı yazılım zaten profil dosyalarına erişebilir.
 - **hafiza.py ilk-güven penceresi (TOFU)**: ilk çalıştırmada görülen özet güvenilir sayılır; dosya ilk çalıştırmadan önce değiştirilmişse fark edilmez. Kabul edildi. Azaltma: kullanıcı Ayarlar → Hafıza'dan özeti görüp kasadaki git kaydıyla karşılaştırabilir. (Denetim ile çalıştırma arasındaki yarış kapatılmıştır: dosya tek seferde okunur, özet ve çalıştırılan kod aynı baytlardır.)
+- **hafiza.py'nin kardeş modülleri**: `hafiza.py`'nin içe aktardığı kasa modülleri (`kasa/araclar/` altı) hash kapsamı dışındadır; yalnızca `hafiza.py` özetlenir. Kasa ACL'si dar olduğu için kabul edildi.
 
 ## Hafıza OS bağlantısı
 

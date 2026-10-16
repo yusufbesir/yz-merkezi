@@ -1607,6 +1607,21 @@ class HassasVeModelGonderHttpTesti(HttpTabani):
         self.assertEqual(ms.ayarlari_oku()["sohbetler"], [], "yerel geçmişe de eklenmez")
         self.assertNotIn("abcdefghijklmnop1234567890", json.dumps(v))
 
+    def test_150k_metnin_sonundaki_anahtar_onay_ister(self):
+        gelen = []
+        uzun = "lorem ipsum " * 12500 + "sk-" + "A1b2C3d4E5f6G7h8I9j0"
+        (_, v), = self.calistir(gelen, [{"metin": uzun}])
+        self.assertEqual((v["onay_gerekli"], v["kategori"]), (True, "api_anahtari"))
+        self.assertEqual(gelen, [])
+
+    def test_cok_uzun_temiz_metin_yalniz_onayli_gider(self):
+        gelen = []
+        uzun = "merhaba dünya " * 8000
+        (_, v1), (_, v2) = self.calistir(gelen, [{"metin": uzun}, {"metin": uzun, "onayli": True}])
+        self.assertEqual((v1["onay_gerekli"], v1["kategori"]), (True, "uzun_metin"))
+        self.assertNotIn("onay_gerekli", v2)
+        self.assertEqual(len(gelen), 1)
+
     def test_onayli_true_ile_gonderilir(self):
         gelen = []
         (_, v1), (_, v2) = self.calistir(gelen, [{"metin": self.ANAHTAR}, {"metin": self.ANAHTAR, "onayli": True}])

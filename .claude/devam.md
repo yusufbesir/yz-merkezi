@@ -41,7 +41,10 @@ Güncelleme: 2026-10-15 20:52 (TR)
 
 - 03:15 Düşük notlar + ReDoS commit 49e2da7 (612 test), uygulama yeniden başlatıldı, koordinatöre bildirildi.
 
+- 03:20 Denetmen gerilemesi (tara yalnızca ilk 100k): örtüşmeli parça tarama + uzunluk aşımında onay için Sonnet ajanı çalışıyor.
+
 ## Sıradaki adımlar
+- Ajan raporu → suit → commit → push → koordinatöre commit.
 - Tamamlandı. Bekleyen: Yusuf'un pano testi koşusu; Claude/Gemini girişleri.
 - Güvenlik ajanı raporu → tam suit → commit → push → koordinatöre commit → uygulamayı yeniden başlat (belirteç yolu değişiyor).
 - Bekleyen: kullanıcı Claude/Gemini girişi; jev_acik ve sürümlü Jev kimliği kararı (Yusuf). Bekleyen: kullanıcı Claude/Gemini girişi; denetmenin jev_acik sorusuna Yusuf'un yanıtı.

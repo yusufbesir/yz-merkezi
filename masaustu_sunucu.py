@@ -1079,6 +1079,9 @@ def sor_akisi(p):
     with KILIT:
         ayarlar = ayarlari_oku()["ayarlar"]
     hassas_notu = None
+    if hassas.uzun_mu(metin) and not p["onayli"]:  # çok uzun metin: yalnızca onaylı gönderim
+        yield {"tur": "onay_gerekli", **hassas.uzun_onay_bilgisi(metin), "kaynak": "kural"}
+        return
     if ayarlar.get("hassas_uyari", True) and not p["onayli"]:  # onay gerekiyorsa hiçbir şey kaydedilmez/gönderilmez
         tarama = hassas.tara(metin)
         if hassas.onay_gerekli_mi(tarama):
@@ -2014,6 +2017,8 @@ class Isleyici(guvenlik.GuvenlikKarisimi, BaseHTTPRequestHandler):
             model_sec = _model_sec_dogrula(g.get("model_sec"))
             baglam_karari, baglam_kimligi = _baglam_karari_dogrula(g)
             hassas_notu = None
+            if hassas.uzun_mu(metin) and g.get("onayli") is not True:  # çok uzun metin: yalnızca onaylı gönderim
+                return {"onay_gerekli": True, **hassas.uzun_onay_bilgisi(metin), "kaynak": "kural"}
             if veri["ayarlar"].get("hassas_uyari", True) and g.get("onayli") is not True:
                 tarama = hassas.tara(metin)  # gönderilmeden önce; onay gerekiyorsa hiçbir yere yazılmaz/gönderilmez
                 if hassas.onay_gerekli_mi(tarama):

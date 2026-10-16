@@ -29,10 +29,12 @@ ACIKLAMALAR = {
     "olasi_anahtar": "rastgele görünen uzun bir dize (bir anahtar ya da belirteç olabilir)",
     "kisisel": "kişisel iletişim bilgisi (telefon numarası ya da e-posta adresi)",
 }
+UZUN_ACIKLAMA = "çok uzun bir metin (tamamı taranır; yine de göndermeden önce onay gerekir)"
 ENTROPI_ESIGI = 4.5        # bit/karakter: base64 benzeri dizeler için
 HEX_ENTROPI_ESIGI = 3.5    # bit/karakter: onaltılık dizelerin en yüksek entropisi 4'tür
 ENTROPI_EN_AZ = 32         # karakter
-GIRDI_SINIRI = 100_000     # karakter: taranan metnin üst sınırı (kötü niyetli uzun girdide süreyi sınırlar)
+GIRDI_SINIRI = 100_000     # karakter: tek tarama parçasının boyu (daha uzun metin parça parça taranır; süre doğrusal kalır)
+ORTUSME = 512              # karakter: ardışık parçaların örtüşmesi (parça sınırındaki sır kaçmasın)
 
 _SOL = r"(?<![A-Za-z0-9_])"  # kalıp başka bir sözcüğün ortasında başlamasın
 _SAG = r"(?![A-Za-z0-9_])"
@@ -166,7 +168,7 @@ _SIRA = (
 
 
 def _eslesmeler(metin):
-    """[(kategori, eşleşen metin, (maske başı, maske sonu))]: her yer en çok bir kez sayılır."""
+    """[(kategori, eşleşen metin, (maske başı, maske sonu), (eşleşme başı, eşleşme sonu))]: her yer en çok bir kez sayılır."""
     kalan = str(metin or "")
     bulunan = []
     for kategori, kalip, dogrula in _SIRA:
@@ -176,7 +178,7 @@ def _eslesmeler(metin):
                 continue
             if kategori:
                 aralik = m.span("deger") if "deger" in kalip.groupindex and m.group("deger") else m.span()
-                bulunan.append((kategori, m.group(0), aralik))
+                bulunan.append((kategori, m.group(0), aralik, m.span()))
             parcalar.append(kalan[son:m.start()])
             parcalar.append(_ENGEL * (m.end() - m.start()))
             son = m.end()
@@ -186,26 +188,68 @@ def _eslesmeler(metin):
     return bulunan
 
 
+def _parcali_eslesmeler(metin):
+    """Metni GIRDI_SINIRI'lık, ORTUSME örtüşmeli parçalara bölüp her parçayı tarar; konumlar mutlak indekstir.
+
+    Aynı kategorideki çakışan eşleşmeler (örtüşme bölgesi) tek sayılır. Süre metin uzunluğuyla doğrusal artar.
+    Döner: [(kategori, eşleşen metin, (maske başı, maske sonu))], konuma göre sıralı.
+    """
+    if len(metin) <= GIRDI_SINIRI:
+        return [(k, e, a) for k, e, a, _ in _eslesmeler(metin)]
+    adim = GIRDI_SINIRI - ORTUSME
+    tum = []
+    for bas in range(0, len(metin), adim):
+        parca = metin[bas:bas + GIRDI_SINIRI]
+        for k, e, (a0, a1), (t0, t1) in _eslesmeler(parca):
+            tum.append((k, e, (a0 + bas, a1 + bas), (t0 + bas, t1 + bas)))
+        if bas + GIRDI_SINIRI >= len(metin):
+            break
+    tum.sort(key=lambda x: (x[3][0], -x[3][1]))
+    sonuc, son_bitis = [], {}
+    for k, e, a, t in tum:
+        # aynı kategoride önceki bir eşleşmeyle çakışıyorsa (örtüşmede iki kez bulunmuş ya da sınırda kesilmiş) say-ma
+        if t[0] < son_bitis.get(k, -1):
+            son_bitis[k] = max(son_bitis[k], t[1])
+            if sonuc and sonuc[-1][0] == k and a[1] > sonuc[-1][2][1]:
+                sonuc[-1] = (k, sonuc[-1][1], (sonuc[-1][2][0], a[1]))  # kesik eşleşmenin maskesi tam hâline uzar
+            continue
+        son_bitis[k] = t[1]
+        sonuc.append((k, e, a))
+    return sonuc
+
+
 def tara(metin):
-    """Metni tarar. Döner: {"kategori", "eslesme_sayisi", "ornek", "kategoriler", "onem"}.
+    """Metni tarar. Döner: {"kategori", "eslesme_sayisi", "ornek", "kategoriler", "onem", "kirpildi"}.
 
     kategori: KATEGORILER'den biri ya da "yok"; eslesme_sayisi seçilen kategorideki eşleşmelerin adedi; ornek ilk
     eşleşmenin maskeli hâli (hiç yoksa ""); kategoriler bulunan tüm kategoriler; onem "yuksek" | "dusuk" | None;
-    kirpildi metin GIRDI_SINIRI'ndan uzunsa yalnızca ilk GIRDI_SINIRI karakter taranmıştır (True).
+    kirpildi geriye uyumluluk için hep False: metnin tamamı GIRDI_SINIRI'lık örtüşmeli parçalarla taranır.
     """
     bulunanlar = {k: [] for k in KATEGORILER}
-    metin = str(metin or "")
-    kirpildi = len(metin) > GIRDI_SINIRI
-    for kategori, parca, _ in _eslesmeler(metin[:GIRDI_SINIRI]):
+    for kategori, parca, _ in _parcali_eslesmeler(str(metin or "")):
         bulunanlar[kategori].append(parca)
     bulunan_kategoriler = [k for k in KATEGORILER if bulunanlar[k]]
     if not bulunan_kategoriler:
         return {"kategori": "yok", "eslesme_sayisi": 0, "ornek": "", "kategoriler": [], "onem": None,
-                "kirpildi": kirpildi}
+                "kirpildi": False}
     secilen = bulunan_kategoriler[0]
     return {"kategori": secilen, "eslesme_sayisi": len(bulunanlar[secilen]),
             "ornek": ornek_maskele(bulunanlar[secilen][0]), "kategoriler": bulunan_kategoriler,
-            "onem": "yuksek" if secilen in YUKSEK else "dusuk", "kirpildi": kirpildi}
+            "onem": "yuksek" if secilen in YUKSEK else "dusuk", "kirpildi": False}
+
+
+def uzun_mu(metin):
+    """Metin tek tarama parçasından (GIRDI_SINIRI) uzun mu? Sunucu bu durumda yalnızca onaylı gönderime izin verir."""
+    return len(str(metin or "")) > GIRDI_SINIRI
+
+
+def uzun_onay_bilgisi(metin):
+    """Çok uzun metin için onay isteği alanları: yüksek önemli bulgu varsa onun kategorisi, yoksa "uzun_metin"."""
+    sonuc = tara(metin)
+    if onay_gerekli_mi(sonuc):
+        return {"kategori": sonuc["kategori"], "aciklama": uyari_metni(sonuc),
+                "eslesme_sayisi": sonuc["eslesme_sayisi"]}
+    return {"kategori": "uzun_metin", "aciklama": UZUN_ACIKLAMA, "eslesme_sayisi": 0}
 
 
 def onay_gerekli_mi(sonuc):
@@ -215,7 +259,9 @@ def onay_gerekli_mi(sonuc):
 
 def hassas_var_mi(metin):
     """Herhangi bir bulgu (düşük önemliler dahil) var mı? Uzak sınıflandırıcıya (Jev) gönderim kararı için."""
-    return tara(metin)["kategori"] != "yok"
+    sonuc = tara(metin)
+    # tarama tam yapılamadıysa (kırpılmış/atlanmış parça) güvenli taraf: hassas var say
+    return sonuc["kategori"] != "yok" or bool(sonuc.get("kirpildi"))
 
 
 def maskele(metin):
@@ -225,15 +271,18 @@ def maskele(metin):
     E-posta ve telefon (kişisel, düşük önem) maskelenmez.
     """
     metin = str(metin or "")
-    if len(metin) > GIRDI_SINIRI:   # uzun metin parça parça maskelenir; her parça doğrusal sürede taranır
-        return "".join(maskele(metin[i:i + GIRDI_SINIRI]) for i in range(0, len(metin), GIRDI_SINIRI))
-    araliklar = sorted((a, k) for k, _, a in _eslesmeler(metin) if k in MASKELENEN)
+    araliklar = sorted((a, k) for k, _, a in _parcali_eslesmeler(metin) if k in MASKELENEN)
     parcalar, son = [], 0
     for (bas, bit), kategori in araliklar:
-        if bas < son:
+        if bas < son:   # önceki maskeyle çakışıyorsa (parça sınırında kesik eşleşme) maske gerekirse uzar
+            if bit > son:
+                parcalar.pop()
+                parcalar.append(f"[GİZLİ:{kategori_onceki}]")
+                son = bit
             continue
         parcalar.append(metin[son:bas])
         parcalar.append(f"[GİZLİ:{kategori}]")
+        kategori_onceki = kategori
         son = bit
     parcalar.append(metin[son:])
     return "".join(parcalar)
