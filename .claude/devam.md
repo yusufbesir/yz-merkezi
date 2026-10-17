@@ -65,6 +65,8 @@ Güncelleme: 2026-10-17 08:50 (TR)
   SONRAKİ TUR (Yusuf Claude girişi yaptıktan sonra, kararı Yusuf'a sor): oturum başına kalıcı `claude` süreci (--input-format stream-json --permission-prompt-tool stdio), izin istekleri arayüzde kart, Durdur → interrupt; ayrıntı arastirma/claude-masaustu-tarama.md "Harness" bölümü.
   BEKLEYEN KARARLAR: Gemini CLI'nin Antigravity CLI ile değiştirildiği iddiası (harness raporu) doğrulanmalı; Antigravity kurulu değil (kurulsun mu?).
 
+- 17 Ekim 18:50 Yusuf: OpenCode araştırması → arastirma/opencode-arastirmasi.md + GELISTIRME-NOTLARI.md (yeni). Karar Yusuf'ta: OpenCode dördüncü motor olarak kurulsun mu? Abacus AI taraması 21 Ekim 15:00 zamanlanmış görev (abacus-ai-tarama). Proje duraklaması sürüyor.
+
 ## Sıradaki adımlar
 - Tamamlandı. Bekleyen (yalnız Yusuf yapabilir): Claude (`claude auth login`) ve Gemini (`gemini`) girişleri; pano testi kendi terminalinden. Bekleyen: Yusuf'un pano testi koşusu; Claude/Gemini girişleri. Bekleyen: Yusuf'un pano testi koşusu; Claude/Gemini girişleri.
 - Güvenlik ajanı raporu → tam suit → commit → push → koordinatöre commit → uygulamayı yeniden başlat (belirteç yolu değişiyor).
