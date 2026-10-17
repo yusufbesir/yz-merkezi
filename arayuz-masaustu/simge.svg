@@ -1,33 +1,69 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- Yapay Zeka Merkezi simgesi (2026-10-17, yazan: Claude Fable 5.1): koyu lacivert-turkuaz zemin,
+       üç ışıklı düğüm (mor, mavi, turkuaz) parlak bir merkezde birleşir. Özgün vektör; dış görsel yok. -->
   <defs>
     <linearGradient id="zemin" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#e08462"/>
-      <stop offset="1" stop-color="#c4623f"/>
+      <stop offset="0" stop-color="#1b1f6b"/>
+      <stop offset=".55" stop-color="#0f2f8f"/>
+      <stop offset="1" stop-color="#0aa7b8"/>
+    </linearGradient>
+    <radialGradient id="merkez" cx=".5" cy=".5" r=".5">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset=".45" stop-color="#eaf6ff"/>
+      <stop offset="1" stop-color="#8fd3ff" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="morIsik" cx=".5" cy=".5" r=".5">
+      <stop offset="0" stop-color="#c58cff" stop-opacity=".9"/>
+      <stop offset="1" stop-color="#8a4dff" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="maviIsik" cx=".5" cy=".5" r=".5">
+      <stop offset="0" stop-color="#7fc3ff" stop-opacity=".9"/>
+      <stop offset="1" stop-color="#2d8cff" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="turkuazIsik" cx=".5" cy=".5" r=".5">
+      <stop offset="0" stop-color="#8ff6ff" stop-opacity=".9"/>
+      <stop offset="1" stop-color="#19d3e6" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="mor" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#d9b3ff"/><stop offset="1" stop-color="#7b3dff"/>
+    </linearGradient>
+    <linearGradient id="mavi" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#b6e0ff"/><stop offset="1" stop-color="#1f7cff"/>
+    </linearGradient>
+    <linearGradient id="turkuaz" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#c9fdff"/><stop offset="1" stop-color="#12c2d8"/>
     </linearGradient>
   </defs>
   <rect width="256" height="256" rx="58" fill="url(#zemin)"/>
-  <!-- bağlantılar: merkezden üç düğüme -->
-  <g stroke="#f4f3ee" stroke-width="9" stroke-linecap="round" fill="none">
-    <line x1="128" y1="128" x2="128" y2="52"/>
-    <line x1="128" y1="128" x2="62" y2="166"/>
-    <line x1="128" y1="128" x2="194" y2="166"/>
-  </g>
-  <!-- düğümler: yeşil, mavi, turuncu -->
-  <g fill="#f4f3ee">
-    <circle cx="128" cy="52" r="27"/>
-    <circle cx="62" cy="166" r="27"/>
-    <circle cx="194" cy="166" r="27"/>
-  </g>
-  <circle cx="128" cy="52" r="17" fill="#10a37f"/>
-  <circle cx="62" cy="166" r="17" fill="#4285f4"/>
-  <circle cx="194" cy="166" r="17" fill="#d97757"/>
-  <!-- merkez: konuşma balonu -->
-  <g transform="translate(128 128) scale(.9) translate(-128 -128)">
-    <path fill="#262624" d="M106 98h44a20 20 0 0 1 20 20v18a20 20 0 0 1-20 20h-8l-14 16-14-16h-8a20 20 0 0 1-20-20v-18a20 20 0 0 1 20-20z"/>
-    <g fill="#f4f3ee">
-      <circle cx="110" cy="127" r="5.5"/>
-      <circle cx="128" cy="127" r="5.5"/>
-      <circle cx="146" cy="127" r="5.5"/>
+  <!-- hafif iç parıltı -->
+  <rect x="2" y="2" width="252" height="252" rx="56" fill="none" stroke="#ffffff" stroke-opacity=".10" stroke-width="2"/>
+  <!-- düğüm ışıkları -->
+  <circle cx="64" cy="78" r="46" fill="url(#morIsik)"/>
+  <circle cx="192" cy="78" r="46" fill="url(#maviIsik)"/>
+  <circle cx="128" cy="190" r="46" fill="url(#turkuazIsik)"/>
+  <!-- bağlantılar -->
+  <g stroke-linecap="round" fill="none">
+    <g stroke="#ffffff" stroke-opacity=".22" stroke-width="12">
+      <line x1="64" y1="78" x2="128" y2="124"/>
+      <line x1="192" y1="78" x2="128" y2="124"/>
+      <line x1="128" y1="190" x2="128" y2="124"/>
+    </g>
+    <g stroke="#f3fbff" stroke-width="5">
+      <line x1="64" y1="78" x2="128" y2="124"/>
+      <line x1="192" y1="78" x2="128" y2="124"/>
+      <line x1="128" y1="190" x2="128" y2="124"/>
     </g>
   </g>
+  <!-- düğümler -->
+  <circle cx="64" cy="78" r="21" fill="url(#mor)"/>
+  <circle cx="192" cy="78" r="21" fill="url(#mavi)"/>
+  <circle cx="128" cy="190" r="21" fill="url(#turkuaz)"/>
+  <g fill="#ffffff" fill-opacity=".85">
+    <circle cx="57" cy="70" r="6"/>
+    <circle cx="185" cy="70" r="6"/>
+    <circle cx="121" cy="182" r="6"/>
+  </g>
+  <!-- merkez -->
+  <circle cx="128" cy="124" r="40" fill="url(#merkez)"/>
+  <circle cx="128" cy="124" r="15" fill="#ffffff"/>
 </svg>

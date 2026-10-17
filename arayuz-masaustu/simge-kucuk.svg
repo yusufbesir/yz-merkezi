@@ -1,24 +1,20 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
-  <!-- 16-32 px için sadeleştirilmiş sürüm: daha kalın bağlantılar, büyük düğümler, ayrıntısız balon -->
+  <!-- 16-32 px için sadeleştirilmiş sürüm (2026-10-17, yazan: Claude Fable 5.1): parıltı yok, kalın çizgi, büyük düğüm. -->
   <defs>
     <linearGradient id="zemin" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#e08462"/>
-      <stop offset="1" stop-color="#c4623f"/>
+      <stop offset="0" stop-color="#1b1f6b"/>
+      <stop offset=".55" stop-color="#0f2f8f"/>
+      <stop offset="1" stop-color="#0aa7b8"/>
     </linearGradient>
   </defs>
   <rect width="256" height="256" rx="52" fill="url(#zemin)"/>
-  <g stroke="#f4f3ee" stroke-width="16" stroke-linecap="round" fill="none">
-    <line x1="128" y1="132" x2="128" y2="54"/>
-    <line x1="128" y1="132" x2="60" y2="176"/>
-    <line x1="128" y1="132" x2="196" y2="176"/>
+  <g stroke="#f3fbff" stroke-width="16" stroke-linecap="round" fill="none">
+    <line x1="60" y1="74" x2="128" y2="128"/>
+    <line x1="196" y1="74" x2="128" y2="128"/>
+    <line x1="128" y1="200" x2="128" y2="128"/>
   </g>
-  <g fill="#f4f3ee">
-    <circle cx="128" cy="54" r="38"/>
-    <circle cx="60" cy="176" r="38"/>
-    <circle cx="196" cy="176" r="38"/>
-  </g>
-  <circle cx="128" cy="54" r="25" fill="#10a37f"/>
-  <circle cx="60" cy="176" r="25" fill="#4285f4"/>
-  <circle cx="196" cy="176" r="25" fill="#d97757"/>
-  <path fill="#262624" d="M100 98h56a22 22 0 0 1 22 22v22a22 22 0 0 1-22 22h-10l-18 20-18-20h-10a22 22 0 0 1-22-22v-22a22 22 0 0 1 22-22z"/>
+  <circle cx="60" cy="74" r="34" fill="#a66bff"/>
+  <circle cx="196" cy="74" r="34" fill="#3d8fff"/>
+  <circle cx="128" cy="200" r="34" fill="#22d2e6"/>
+  <circle cx="128" cy="128" r="30" fill="#ffffff"/>
 </svg>
