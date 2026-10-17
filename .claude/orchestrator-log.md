@@ -7,6 +7,10 @@
 
 | Tarih | Görev | Ajan / model | Token | Sonuç |
 |---|---|---|---|---|
+| 2026-10-17 09:50 | Claude masaüstü uygulaması REA taraması (Electron, fuses, IPC yüzeyi, harness protokolü) | scout / claude-opus-5-5 | 198.621 | tamam: arastirma/claude-masaustu-tarama.md; çift yönlü stream-json + permission-prompt-tool stdio bulgusu |
+| 2026-10-17 09:38 | Codex ve Antigravity taraması | scout / claude-sonnet-5-5 | 161.983 | tamam: arastirma/codex-antigravity-tarama.md; Antigravity kurulu değil, Codex 0.163 app-server |
+| 2026-10-17 09:42 | Harness araştırması ve uygulama planı | scout / claude-sonnet-5-5 | 277.529 | tamam: arastirma/harness-arastirmasi.md; 5 öncelikli madde |
+| 2026-10-17 08:50 | Modern uygulama simgesi (Canva aday + özgün SVG) | koordinatör / claude-fable-5-1 | ~45.000 | tamam: commit 2f4243e |
 | 2026-10-11 12:08 | Üç programın sohbet verisine erişim yollarını keşfet | scout / claude-haiku-5-5 | 113.453 | kısmen: Gemini Electron, AppData taraması güvenlik filtresine takıldı; karar: web sürümleri + CDP |
 | 2026-10-11 12:15 | CDP istemcisi ve Edge tarayıcı denetimi (cdp.py, tarayici.py) | implementer / claude-sonnet-5-5 | 181.125 | tamam: 42 test geçti, gerçek Edge bütünleşme testi dahil |
 | 2026-10-11 12:18 | Site DOM uyarlayıcıları (siteler.py: sohbet listesi, mesajlar, gönderme JS'leri) | implementer / claude-sonnet-5-5 | 169.153 | tamam: 12 test + node --check geçti; seçiciler gerçek sitede denenmedi |
