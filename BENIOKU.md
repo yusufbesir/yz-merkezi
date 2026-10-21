@@ -448,3 +448,7 @@ Bu projenin metin dosyalarında (py, js, html, css, bat, ps1, md) dosyanın baş
 Metin olmayan dosyalar (json, png, ico, svg) yorum satırı taşıyamadığı için aynı kurala bu BENIOKU.md üzerinden tabidir: `saglayicilar.json`, `uygulamalar.json`, `yonlendirme.json`, `arayuz/simge.ico`, `arayuz/simge.svg`, `arayuz-masaustu/simge.ico`, `arayuz-masaustu/simge.svg`, `arayuz-masaustu/simge-kucuk.svg`, `arayuz-masaustu/simge-256.png`.
 
 Yapay zekalar bunları Yusuf'un kuralları çerçevesinde değiştirebilir; silme kararı yalnız Yusuf'undur ve yalnızca Geri Dönüşüm Kutusu'na taşınarak yapılır.
+
+---
+## Arşiv notu (2026-10-21)
+Bu proje arşivlendi; AgentMom projesine devredildi. Uygulama dosyaları depodan kaldırıldı, notlar ve araştırmalar kaldı. Son çalışan sürüm `arsiv/son-calisir` etiketindedir (`git checkout arsiv/son-calisir`). Yusuf'un kararıyla, 2026-10-21.
