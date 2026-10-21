@@ -67,6 +67,8 @@ Güncelleme: 2026-10-17 08:50 (TR)
 
 - 17 Ekim 18:50 Yusuf: OpenCode araştırması → arastirma/opencode-arastirmasi.md + GELISTIRME-NOTLARI.md (yeni). Karar Yusuf'ta: OpenCode dördüncü motor olarak kurulsun mu? Abacus AI taraması 21 Ekim 15:00 zamanlanmış görev (abacus-ai-tarama). Proje duraklaması sürüyor.
 
+- 21 Ekim 19:40 PROJE ARŞİVLENDİ (Yusuf, AgentMom konusu; commit 9937b8c; kod arsiv-son-calisir-kod dalında). Bu dosyadaki bekleyen harness/OpenCode işleri bu projede YAPILMAYACAK; fikirler arastirma/ raporlarında ve GELISTIRME-NOTLARI.md'de AgentMom için referans. Abacus AI raporu eklendi (arastirma/abacus-ai-tarama.md).
+
 ## Sıradaki adımlar
 - Tamamlandı. Bekleyen (yalnız Yusuf yapabilir): Claude (`claude auth login`) ve Gemini (`gemini`) girişleri; pano testi kendi terminalinden. Bekleyen: Yusuf'un pano testi koşusu; Claude/Gemini girişleri. Bekleyen: Yusuf'un pano testi koşusu; Claude/Gemini girişleri.
 - Güvenlik ajanı raporu → tam suit → commit → push → koordinatöre commit → uygulamayı yeniden başlat (belirteç yolu değişiyor).

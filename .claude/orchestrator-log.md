@@ -7,6 +7,7 @@
 
 | Tarih | Görev | Ajan / model | Token | Sonuç |
 |---|---|---|---|---|
+| 2026-10-21 19:40 | Abacus AI taraması (AgentMom odaklı öneriler) | scout / claude-sonnet-5-5 | ~65.000 | tamam: arastirma/abacus-ai-tarama.md; zamanlanmış koşu takılmıştı, ajanla yapıldı |
 | 2026-10-17 18:50 | OpenCode/OpenChamber araştırması ve YZ Merkezi önerileri | scout / claude-sonnet-5-5 | ~124.000 | tamam: arastirma/opencode-arastirmasi.md, GELISTIRME-NOTLARI.md; 28/33 doğrulandı |
 | 2026-10-17 09:50 | Claude masaüstü uygulaması REA taraması (Electron, fuses, IPC yüzeyi, harness protokolü) | scout / claude-opus-5-5 | 198.621 | tamam: arastirma/claude-masaustu-tarama.md; çift yönlü stream-json + permission-prompt-tool stdio bulgusu |
 | 2026-10-17 09:38 | Codex ve Antigravity taraması | scout / claude-sonnet-5-5 | 161.983 | tamam: arastirma/codex-antigravity-tarama.md; Antigravity kurulu değil, Codex 0.163 app-server |
