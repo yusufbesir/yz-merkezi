@@ -451,4 +451,4 @@ Yapay zekalar bunları Yusuf'un kuralları çerçevesinde değiştirebilir; silm
 
 ---
 ## Arşiv notu (2026-10-21)
-Bu proje arşivlendi; AgentMom projesine devredildi. Uygulama dosyaları depodan kaldırıldı, notlar ve araştırmalar kaldı. Son çalışan sürüm `arsiv/son-calisir` etiketindedir (`git checkout arsiv/son-calisir`). Yusuf'un kararıyla, 2026-10-21.
+Bu proje arşivlendi; AgentMom projesine devredildi. Uygulama dosyaları depodan kaldırıldı, notlar ve araştırmalar kaldı. Son çalışan sürüm `arsiv-son-calisir-kod` dalındadır (`git checkout arsiv-son-calisir-kod`). Yusuf'un kararıyla, 2026-10-21.
